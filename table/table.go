@@ -15,11 +15,7 @@ type TableDefinition struct {
 }
 
 func (d *TableDefinition) getKey(primaryKey any, sortkey any) (res map[string]types.AttributeValue, err error) {
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("failed to encode key from table %s:%w", d.Name, err)
-		}
-	}()
+
 	var count = 2
 	if d.RangeKey.Name == "" {
 		count = 1
@@ -27,13 +23,13 @@ func (d *TableDefinition) getKey(primaryKey any, sortkey any) (res map[string]ty
 	res = make(map[string]types.AttributeValue, count)
 	av, err := d.PrimaryKey.encodeToAv(primaryKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode table primary key %s:%w", d.PrimaryKey.Name, err)
+		return nil, fmt.Errorf("failed to encode table primary key")
 	}
 	res[d.PrimaryKey.Name] = av
 	if d.RangeKey.Name != "" {
 		av, err = d.RangeKey.encodeToAv(sortkey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode table range key %s:%w", d.RangeKey.Name, err)
+			return nil, fmt.Errorf("failed to encode table range key")
 		}
 		res[d.PrimaryKey.Name] = av
 
@@ -66,6 +62,7 @@ func (ad AttributeDefinition) encodeToAv(item any) (types.AttributeValue, error)
 		_, ok := encoded.(*types.AttributeValueMemberN)
 		if !ok {
 			return nil, fmt.Errorf("encoded attribute to %T and not to number", item)
+
 		}
 	case types.ScalarAttributeTypeB:
 		_, ok := encoded.(*types.AttributeValueMemberB)
