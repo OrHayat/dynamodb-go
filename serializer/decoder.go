@@ -112,3 +112,14 @@ func (d *Decoder) Unmarshal(av types.AttributeValue, out any) (err error) {
 	err = lookupSerializer(t).unmarshal(d, av, val, decoderState{})
 	return err
 }
+
+func UnmarshalMap(
+	decoder *Decoder,
+	m map[string]types.AttributeValue,
+	out any,
+) error {
+	if decoder == nil {
+		decoder = NewDecoder()
+	}
+	return decoder.Unmarshal(&types.AttributeValueMemberM{Value: m}, out)
+}
