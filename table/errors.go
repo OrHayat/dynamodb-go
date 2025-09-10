@@ -10,7 +10,7 @@ import (
 var ErrItemNotFound = errors.New("item doesnt exists")
 var ErrAlreadyExists = errors.New("item already exists")
 
-type operationError struct {
+type OperationError struct {
 	operation   string
 	internalErr error
 	table       *TableDefinition
@@ -18,26 +18,25 @@ type operationError struct {
 	sk          any
 }
 
-func (e *operationError) JSON() string {
+func (e *OperationError) JSON() string {
 	return e.ErrorJSON()
 }
-func (e *operationError) Text() string {
+
+func (e *OperationError) Text() string {
 	return e.ErrorText()
 }
 
-func (e operationError) Unwrap() error {
+func (e OperationError) Unwrap() error {
 	return e.internalErr
 }
 
-func (e *operationError) Error() string {
+func (e *OperationError) Error() string {
 	sb := strings.Builder{}
 	if e.operation == "" {
-		//TODDO: write some generic message
 	} else {
 		sb.WriteString(e.operation + " failed")
 	}
 	if e.table != nil {
-		//TODO format error
 		sb.WriteString(" table" + e.table.Name)
 	}
 
@@ -47,7 +46,7 @@ func (e *operationError) Error() string {
 	return sb.String()
 }
 
-func (e *operationError) ErrorText() string {
+func (e *OperationError) ErrorText() string {
 	var sb strings.Builder
 
 	// Operation context
@@ -95,7 +94,7 @@ func (e *operationError) ErrorText() string {
 	return sb.String()
 }
 
-func (e *operationError) ErrorJSON() string {
+func (e *OperationError) ErrorJSON() string {
 	payload := map[string]any{}
 	if e.operation != "" {
 		payload["operation"] = e.operation

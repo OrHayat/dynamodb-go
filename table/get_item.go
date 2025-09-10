@@ -39,7 +39,7 @@ func GetItem(
 ) (err error) {
 	encodedKey, err := table.getKey(pk, sk)
 	if err != nil {
-		return &operationError{
+		return &OperationError{
 			operation:   "get item key encoding",
 			table:       table,
 			pk:          pk,
@@ -51,7 +51,7 @@ func GetItem(
 	request := prepareGetRequest(table.Name, encodedKey)
 	res, err := client.GetItem(ctx, request)
 	if err != nil {
-		return &operationError{
+		return &OperationError{
 			operation:   "get item",
 			table:       table,
 			pk:          pk,
@@ -61,7 +61,7 @@ func GetItem(
 	}
 
 	if len(res.Item) == 0 {
-		return &operationError{
+		return &OperationError{
 			operation:   "get item",
 			table:       table,
 			pk:          pk,
@@ -72,7 +72,7 @@ func GetItem(
 
 	err = serializer.UnmarshalMap(client.GetDecoder(), res.Item, out)
 	if err != nil {
-		return &operationError{
+		return &OperationError{
 			operation:   "get item unmarshal",
 			table:       table,
 			pk:          pk,
