@@ -31,19 +31,7 @@ func (e OperationError) Unwrap() error {
 }
 
 func (e *OperationError) Error() string {
-	sb := strings.Builder{}
-	if e.operation == "" {
-	} else {
-		sb.WriteString(e.operation + " failed")
-	}
-	if e.table != nil {
-		sb.WriteString(" table" + e.table.Name)
-	}
-
-	if e.internalErr != nil {
-		sb.WriteString(e.internalErr.Error())
-	}
-	return sb.String()
+	return e.ErrorText()
 }
 
 func (e *OperationError) ErrorText() string {

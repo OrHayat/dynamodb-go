@@ -10,29 +10,18 @@ import (
 	"github.com/orhayat/dynamodb-go/serializer"
 )
 
-var _ GetItemOptions = ConsistencyOption(false)
-
-type ConsistencyOption bool
-
-func (o ConsistencyOption) applyGetItem(cfg *GetItemConfig) {
-	cfg.Consistency = bool(o)
+type GetItemClient interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	GetDecoder() *serializer.Decoder //mil imply to use default decoder
 }
 
 type GetItemConfig struct {
 	Consistency bool
+	Decoder     *serializer.Decoder
 }
 
 type GetItemOptions interface {
-	applyGetItem(*GetItemConfig)
-}
-
-func WithConsistency(consistency bool) ConsistencyOption {
-	return ConsistencyOption(consistency)
-}
-
-type GetItemClient interface {
-	GetItem(ctx context.Context, params *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error)
-	GetDecoder() *serializer.Decoder
+	applyGetItemOption(*GetItemConfig)
 }
 
 func prepareGetRequest(
@@ -61,9 +50,10 @@ func GetItem(
 ) (err error) {
 	cfg := GetItemConfig{
 		Consistency: true,
+		Decoder:     client.GetDecoder(),
 	}
 	for _, o := range opts {
-		o.applyGetItem(&cfg)
+		o.applyGetItemOption(&cfg)
 	}
 
 	encodedKey, err := table.getKey(pk, sk)
@@ -99,7 +89,7 @@ func GetItem(
 		}
 	}
 
-	err = serializer.UnmarshalMap(client.GetDecoder(), res.Item, out)
+	err = serializer.UnmarshalMap(cfg.Decoder, res.Item, out)
 	if err != nil {
 		return &OperationError{
 			operation:   "get item unmarshal",
@@ -112,7 +102,7 @@ func GetItem(
 	return nil
 }
 
-func GetItemt[T any](
+func GetItemOf[T any](
 	ctx context.Context,
 	client GetItemClient,
 	table *TableDefinition,
@@ -122,4 +112,20 @@ func GetItemt[T any](
 ) (out T, err error) {
 	err = GetItem(ctx, client, table, pk, sk, &out, opts...)
 	return
+}
+
+func GetAsJSON(
+	ctx context.Context,
+	client GetItemClient,
+	table *TableDefinition,
+	pk any,
+	sk any,
+	opts ...GetItemOptions,
+) (out map[string]any, err error) {
+	var res any
+	err = GetItem(ctx, client, table, pk, sk, &res, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return res.(map[string]any), nil
 }

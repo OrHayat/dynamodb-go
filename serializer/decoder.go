@@ -123,3 +123,18 @@ func UnmarshalMap(
 	}
 	return decoder.Unmarshal(&types.AttributeValueMemberM{Value: m}, out)
 }
+
+func MarshalMap(encoder *Encoder, in any) (map[string]types.AttributeValue, error) {
+	if encoder == nil {
+		encoder = NewEncoder()
+	}
+	av, err := encoder.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := av.(*types.AttributeValueMemberM)
+	if !ok {
+		return nil, nil
+	}
+	return m.Value, nil
+}
