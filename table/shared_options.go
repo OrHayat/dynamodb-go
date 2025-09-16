@@ -29,9 +29,15 @@ func WithEncoder(encoder *serializer.Encoder) EncoderOption {
 }
 
 var _ PutItemOptions = EncoderOption{}
+var _ BatchWriteItemOptions = EncoderOption{}
 
 type EncoderOption struct {
 	Encoder *serializer.Encoder
+}
+
+// applyBatchWriteItems implements BatchWriteItemOptions.
+func (e EncoderOption) applyBatchWriteItems(cfg *BatchWriteItemConfig) {
+	cfg.Encoder = e.Encoder
 }
 
 // applyPutItemOption implements PutItemOptions.
