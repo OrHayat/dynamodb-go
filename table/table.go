@@ -10,6 +10,11 @@ import (
 	"github.com/orhayat/dynamodb-go/serializer"
 )
 
+type Key struct {
+	PK any
+	SK any
+}
+
 type TableDefinition struct {
 	Name       string
 	PrimaryKey AttributeDefinition
@@ -46,20 +51,20 @@ func (d *TableDefinition) encodedKeyToVal(k types.AttributeValue) any {
 		panic(fmt.Sprintf("unreachable:nsupported key type %T", k))
 	}
 }
-func (d *TableDefinition) getKey(primaryKey any, sortkey any) (res map[string]types.AttributeValue, err error) {
+func (d *TableDefinition) getKey(key Key) (res map[string]types.AttributeValue, err error) {
 
 	var count = 2
 	if d.RangeKey.Name == "" {
 		count = 1
 	}
 	res = make(map[string]types.AttributeValue, count)
-	av, err := d.PrimaryKey.encodeToAv(primaryKey)
+	av, err := d.PrimaryKey.encodeToAv(key.PK)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode table primary key")
 	}
 	res[d.PrimaryKey.Name] = av
 	if d.RangeKey.Name != "" {
-		av, err = d.RangeKey.encodeToAv(sortkey)
+		av, err = d.RangeKey.encodeToAv(key.SK)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encode table range key")
 		}

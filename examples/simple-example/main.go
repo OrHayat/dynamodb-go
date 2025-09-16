@@ -26,13 +26,15 @@ type logKey int
 const slogKey logKey = 1
 
 type animalTablesCli struct {
-	LoggerLevel string                `help:"log level" default:"info" enum:"debug,info,warn,error"`
-	Endpoint    string                `help:"dynamodb endpoint url, useful for local testing with dynamodb local or localstack" default:""`
-	CreateTable CreateAnimalTables    `cmd:"" help:"create the animals table"`
-	DeleteTable DeleteAnimalTable     `cmd:"" help:"delete the animals table"`
-	PutItem     PutAnimalTableItem    `cmd:"" help:"put item to the example table"`
-	GetItem     GetAnimalTable        `cmd:"" help:"get item from the example table"`
-	DeleteItem  DeleteAnimalTableItem `cmd:"" help:"delete item from the example table"`
+	LoggerLevel     string                `help:"log level" default:"info" enum:"debug,info,warn,error"`
+	Endpoint        string                `help:"dynamodb endpoint url, useful for local testing with dynamodb local or localstack" default:""`
+	CreateTable     CreateAnimalTables    `cmd:"" help:"create the animals table"`
+	DeleteTable     DeleteAnimalTable     `cmd:"" help:"delete the animals table"`
+	PutItem         PutAnimalTableItem    `cmd:"" help:"put item to the example table"`
+	BatchWriteItems BatchLockItems        `cmd:"" help:"batch put items to the example table"`
+	BatchGetItems   BatchReadLocks        `cmd:"" help:"batch get items from the example table"`
+	GetItem         GetAnimalTable        `cmd:"" help:"get item from the example table"`
+	DeleteItem      DeleteAnimalTableItem `cmd:"" help:"delete item from the example table"`
 }
 
 func (cli *animalTablesCli) AfterApply(ctx *kong.Context) error {
@@ -71,16 +73,26 @@ type AnimalTableSeclector struct {
 
 type CreateAnimalTables struct{}
 
-func (cli *CreateAnimalTables) Run(ctx context.Context, logger *slog.Logger, client *table.Client) error {
+func (cli *CreateAnimalTables) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
 	logger.Info("Creating animal table")
-	return table.CreateTable(ctx, client, &s_animalTable)
+	err = table.CreateTable(ctx, client, &s_animalTable)
+	if err != nil {
+		return err
+	}
+	err = table.CreateTable(ctx, client, &s_locksTable)
+	return err
 }
 
 type DeleteAnimalTable struct{}
 
-func (cli *DeleteAnimalTable) Run(ctx context.Context, logger *slog.Logger, client *table.Client) error {
+func (cli *DeleteAnimalTable) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
 	logger.Info("Deleting animal table")
-	return table.DeleteTable(ctx, client, &s_animalTable)
+	err = table.DeleteTable(ctx, client, &s_animalTable)
+	if err != nil {
+		return err
+	}
+	err = table.DeleteTable(ctx, client, &s_locksTable)
+	return err
 }
 
 type GetAnimalTable struct {
@@ -253,17 +265,18 @@ func (cli *GetAnimalTable) Run(ctx context.Context, logger *slog.Logger, client 
 	logger.Info("Getting animal table item", "Type", cli.AnimalType, "Name", cli.Name)
 	typ := strings.ToLower(cli.AnimalType)
 	res := s_schemaRegistry.GetScehma(typ)
-	err = table.GetItem(ctx, client, &s_animalTable, cli.AnimalType, cli.Name, &res)
+	key := table.Key{PK: cli.AnimalType, SK: cli.Name}
+	err = table.GetItem(ctx, client, &s_animalTable, key, &res)
 	if err != nil {
 		return fmt.Errorf("failed to get item from schema:%w", err)
 	}
 	logger.InfoContext(ctx, "fetched animal from db as generic animal", "animal", res)
-	asGeneric, err := table.GetItemOf[GenericAnimal](ctx, client, &s_animalTable, cli.AnimalType, cli.Name)
+	asGeneric, err := table.GetItemOf[GenericAnimal](ctx, client, &s_animalTable, key)
 	if err != nil {
 		return fmt.Errorf("failed to get item of GenericAnimal:%w", err)
 	}
 	logger.InfoContext(ctx, "fetched animal from db as generic animal", "animal", asGeneric)
-	asJson, err := table.GetAsJSON(ctx, client, &s_animalTable, cli.AnimalType, cli.Name)
+	asJson, err := table.GetAsJSON(ctx, client, &s_animalTable, key)
 	if err != nil {
 		return fmt.Errorf("failed to get item as any type:%w", err)
 	}
@@ -276,12 +289,79 @@ type DeleteAnimalTableItem struct {
 }
 
 func (cli *DeleteAnimalTableItem) Run(ctx context.Context, logger *slog.Logger, client *table.Client) error {
-	err := table.DeleteItem(ctx, client, &s_animalTable, cli.AnimalType, cli.Name)
+	key := table.Key{PK: cli.AnimalType, SK: cli.Name}
+	err := table.DeleteItem(ctx, client, &s_animalTable, key)
 	if err != nil {
 		return err
 	}
 	logger.InfoContext(ctx, "deleted animal from db", "Type", cli.AnimalType, "Name", cli.Name)
 	return nil
+}
+
+type BatchReadLocks struct {
+	Items []string `arg:"" help:"list of items to read"`
+}
+
+func (cli *BatchReadLocks) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
+	if len(cli.Items) == 0 {
+		return fmt.Errorf("no items to read")
+	}
+	keys := []table.Key{}
+	for _, item := range cli.Items {
+		keys = append(keys, table.Key{PK: item})
+	}
+	res, err := table.BatchGetItemsFromSingleTable[lock](ctx, client, &s_locksTable, keys)
+	if err != nil {
+		return fmt.Errorf("failed to batch get items from single table: %w", err)
+	}
+	logger.InfoContext(ctx, "fetched locks from db", "locks", res)
+	return nil
+}
+
+type BatchLockItems struct {
+	Items  []string `arg:"" help:"list of items to lock"`
+	Delete bool
+}
+type lock struct {
+	LockID string `dynamodbav:"LockID"`
+	Owner  string `dynamodbav:"Owner"`
+	TTL    int64  `dynamodbav:"TTL"`
+	Info   string `dynamodbav:"Info"`
+}
+
+func (cli *BatchLockItems) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
+	if len(cli.Items) == 0 {
+		return fmt.Errorf("no items to lock")
+	}
+	putRequests := []table.PutRequest{}
+	deleteRequests := []table.DeleteRequest{}
+
+	if !cli.Delete {
+		for _, item := range cli.Items {
+			putRequests = append(putRequests, table.PutRequest{
+				Item: lock{
+					LockID: item,
+					Owner:  "cli",
+					TTL:    1700000000,
+					Info:   fmt.Sprintf("lock for item %s", item),
+				},
+			})
+		}
+	} else {
+		for _, item := range cli.Items {
+			deleteRequests = append(deleteRequests, table.DeleteRequest{
+				Key: table.Key{PK: item},
+			})
+		}
+	}
+	err = table.BatchWriteItems(ctx, client, []table.WriteRequest{
+		{
+			Table:       &s_locksTable,
+			PutRequests: putRequests,
+			DeleteItems: deleteRequests,
+		},
+	})
+	return err
 }
 
 type PutAnimalTableItem struct {
@@ -317,7 +397,16 @@ var s_animalTable = table.TableDefinition{
 	RangeKey: table.AttributeDefinition{
 		Name: "AnimalName",
 		Type: types.ScalarAttributeTypeS,
-	}}
+	},
+}
+
+var s_locksTable = table.TableDefinition{
+	Name: "Locks",
+	PrimaryKey: table.AttributeDefinition{
+		Name: "LockID",
+		Type: types.ScalarAttributeTypeS,
+	},
+}
 
 func main() {
 	ctx := context.Background()

@@ -43,8 +43,7 @@ func GetItem(
 	ctx context.Context,
 	client GetItemClient,
 	table *TableDefinition,
-	pk any,
-	sk any,
+	key Key,
 	out any,
 	opts ...GetItemOptions,
 ) (err error) {
@@ -56,13 +55,13 @@ func GetItem(
 		o.applyGetItemOption(&cfg)
 	}
 
-	encodedKey, err := table.getKey(pk, sk)
+	encodedKey, err := table.getKey(key)
 	if err != nil {
 		return &OperationError{
 			operation:   "get item key encoding",
 			table:       table,
-			pk:          pk,
-			sk:          sk,
+			pk:          key.PK,
+			sk:          key.SK,
 			internalErr: err,
 		}
 	}
@@ -73,8 +72,8 @@ func GetItem(
 		return &OperationError{
 			operation:   "get item",
 			table:       table,
-			pk:          pk,
-			sk:          sk,
+			pk:          key.PK,
+			sk:          key.SK,
 			internalErr: err,
 		}
 	}
@@ -83,8 +82,8 @@ func GetItem(
 		return &OperationError{
 			operation:   "get item",
 			table:       table,
-			pk:          pk,
-			sk:          sk,
+			pk:          key.PK,
+			sk:          key.SK,
 			internalErr: ErrItemNotFound,
 		}
 	}
@@ -94,8 +93,8 @@ func GetItem(
 		return &OperationError{
 			operation:   "get item unmarshal",
 			table:       table,
-			pk:          pk,
-			sk:          sk,
+			pk:          key.PK,
+			sk:          key.SK,
 			internalErr: err,
 		}
 	}
@@ -106,11 +105,10 @@ func GetItemOf[T any](
 	ctx context.Context,
 	client GetItemClient,
 	table *TableDefinition,
-	pk any,
-	sk any,
+	key Key,
 	opts ...GetItemOptions,
 ) (out T, err error) {
-	err = GetItem(ctx, client, table, pk, sk, &out, opts...)
+	err = GetItem(ctx, client, table, key, &out, opts...)
 	return
 }
 
@@ -118,12 +116,11 @@ func GetAsJSON(
 	ctx context.Context,
 	client GetItemClient,
 	table *TableDefinition,
-	pk any,
-	sk any,
+	key Key,
 	opts ...GetItemOptions,
 ) (out map[string]any, err error) {
 	var res any
-	err = GetItem(ctx, client, table, pk, sk, &res, opts...)
+	err = GetItem(ctx, client, table, key, &res, opts...)
 	if err != nil {
 		return nil, err
 	}

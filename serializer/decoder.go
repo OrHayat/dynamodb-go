@@ -138,3 +138,22 @@ func MarshalMap(encoder *Encoder, in any) (map[string]types.AttributeValue, erro
 	}
 	return m.Value, nil
 }
+
+func UnmarshalList(
+	decoder *Decoder,
+	l []types.AttributeValue,
+	out any,
+) error {
+	if decoder == nil {
+		decoder = NewDecoder()
+	}
+	return decoder.Unmarshal(&types.AttributeValueMemberL{Value: l}, out)
+}
+
+func UnmarshalListOfMaps(decoder *Decoder, l []map[string]types.AttributeValue, out interface{}) error {
+	items := make([]types.AttributeValue, len(l))
+	for i, m := range l {
+		items[i] = &types.AttributeValueMemberM{Value: m}
+	}
+	return UnmarshalList(decoder, items, out)
+}

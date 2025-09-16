@@ -51,16 +51,15 @@ func DeleteItem(
 	ctx context.Context,
 	client DeleteItemClient,
 	table *TableDefinition,
-	pk any,
-	sk any,
+	key Key,
 ) (err error) {
-	encodedKey, err := table.getKey(pk, sk)
+	encodedKey, err := table.getKey(key)
 	if err != nil {
 		return &OperationError{
 			operation:   "delete item key encoding",
 			table:       table,
-			pk:          pk,
-			sk:          sk,
+			pk:          key.PK,
+			sk:          key.SK,
 			internalErr: err,
 		}
 	}
@@ -69,8 +68,8 @@ func DeleteItem(
 		return &OperationError{
 			operation:   "delete item request prepration",
 			table:       table,
-			pk:          pk,
-			sk:          sk,
+			pk:          key.PK,
+			sk:          key.SK,
 			internalErr: err,
 		}
 	}
@@ -81,8 +80,8 @@ func DeleteItem(
 				return &OperationError{
 					operation:   "delete item",
 					table:       table,
-					pk:          pk,
-					sk:          sk,
+					pk:          key.PK,
+					sk:          key.SK,
 					internalErr: ErrItemNotFound,
 				}
 			}
@@ -90,8 +89,8 @@ func DeleteItem(
 		return &OperationError{
 			operation:   "delete item",
 			table:       table,
-			pk:          pk,
-			sk:          sk,
+			pk:          key.PK,
+			sk:          key.SK,
 			internalErr: err,
 		}
 	}

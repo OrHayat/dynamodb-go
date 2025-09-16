@@ -11,9 +11,15 @@ func WithDecoder(decoder *serializer.Decoder) DecoderOption {
 }
 
 var _ GetItemOptions = DecoderOption{}
+var _ BatchGetItemOptions = DecoderOption{}
 
 type DecoderOption struct {
 	Decoder *serializer.Decoder
+}
+
+// applyBatchGetItemOption implements BatchGetItemOptions.
+func (o DecoderOption) applyBatchGetItemOption(cfg *BatchGetItemConfig) {
+	cfg.Decoder = o.Decoder
 }
 
 func (o DecoderOption) applyGetItemOption(cfg *GetItemConfig) {
