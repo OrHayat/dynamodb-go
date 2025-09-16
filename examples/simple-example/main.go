@@ -225,6 +225,22 @@ func simpleFuzzStruct(val any, predefinedFields []KeyValue) (err error) {
 			if err != nil {
 				return err
 			}
+		case reflect.Slice | reflect.Array:
+			for i := 0; i < fv.Len(); i++ {
+				err = simpleFuzzStruct(fv.Index(i).Addr().Interface(), predefinedFields)
+				if err != nil {
+					return err
+				}
+			}
+		case reflect.Map:
+			fv.MapRange()
+			for iter := fv.MapRange(); iter.Next(); {
+				v := iter.Value()
+				err = simpleFuzzStruct(v.Addr().Interface(), predefinedFields)
+				if err != nil {
+					return err
+				}
+			}
 		default:
 			// skip unsupported types
 			continue
@@ -232,6 +248,7 @@ func simpleFuzzStruct(val any, predefinedFields []KeyValue) (err error) {
 	}
 	return nil
 }
+
 func (cli *GetAnimalTable) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
 	logger.Info("Getting animal table item", "Type", cli.AnimalType, "Name", cli.Name)
 	typ := strings.ToLower(cli.AnimalType)
@@ -260,7 +277,11 @@ type DeleteAnimalTableItem struct {
 
 func (cli *DeleteAnimalTableItem) Run(ctx context.Context, logger *slog.Logger, client *table.Client) error {
 	err := table.DeleteItem(ctx, client, &s_animalTable, cli.AnimalType, cli.Name)
-	return err
+	if err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "deleted animal from db", "Type", cli.AnimalType, "Name", cli.Name)
+	return nil
 }
 
 type PutAnimalTableItem struct {
