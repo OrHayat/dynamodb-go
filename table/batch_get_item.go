@@ -10,20 +10,6 @@ import (
 	"github.com/orhayat/dynamodb-go/serializer"
 )
 
-// import (
-// 	"context"
-
-// 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-// 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-// 	"github.com/orhayat/dynamodb-go/serializer"
-// )
-
-// type preparedBatchRequestForTable struct {
-// 	table *TableDefinition
-// 	pk    []any
-// 	sk    []any
-// }
-
 type BatchGetItemClient interface {
 	BatchGetItem(ctx context.Context, params *dynamodb.BatchGetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.BatchGetItemOutput, error)
 	GetDecoder() *serializer.Decoder

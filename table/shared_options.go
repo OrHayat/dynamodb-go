@@ -1,6 +1,9 @@
 package table
 
-import "github.com/orhayat/dynamodb-go/serializer"
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/orhayat/dynamodb-go/serializer"
+)
 
 // decoderOption....
 
@@ -12,9 +15,15 @@ func WithDecoder(decoder *serializer.Decoder) DecoderOption {
 
 var _ GetItemOptions = DecoderOption{}
 var _ BatchGetItemOptions = DecoderOption{}
+var _ ScanOptions = DecoderOption{}
 
 type DecoderOption struct {
 	Decoder *serializer.Decoder
+}
+
+// applyScanOption implements ScanOptions.
+func (o DecoderOption) applyScanOption(cfg *ScanConfig) {
+	cfg.Decoder = o.Decoder
 }
 
 // applyBatchGetItemOption implements BatchGetItemOptions.
@@ -77,4 +86,23 @@ func (o ConsistencyOption) applyGetItemOption(cfg *GetItemConfig) {
 
 func WithConsistency(consistency bool) ConsistencyOption {
 	return ConsistencyOption(consistency)
+}
+
+func WithLimit(limit int) LimitOption {
+	return LimitOption{
+		Limit: limit,
+	}
+}
+
+var _ ScanOptions = LimitOption{}
+
+type LimitOption struct {
+	Limit int
+}
+
+// applyScanOption implements ScanOptions.
+func (o LimitOption) applyScanOption(cfg *ScanConfig) {
+	if o.Limit > 0 {
+		cfg.Limit = aws.Int32(int32(o.Limit))
+	}
 }

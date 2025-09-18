@@ -27,9 +27,9 @@ const slogKey logKey = 1
 
 type animalTablesCli struct {
 	LoggerLevel     string                `help:"log level" default:"info" enum:"debug,info,warn,error"`
-	Endpoint        string                `help:"dynamodb endpoint url, useful for local testing with dynamodb local or localstack" default:""`
-	CreateTable     CreateAnimalTables    `cmd:"" help:"create the animals table"`
-	DeleteTable     DeleteAnimalTable     `cmd:"" help:"delete the animals table"`
+	CreateTable     CreateTables          `cmd:"" help:"create the animals table"`
+	DeleteTable     DeleteTables          `cmd:"" help:"delete the animals table"`
+	ScanTable       ScanTable             `cmd:"" help:"scan the table entries"`
 	PutItem         PutAnimalTableItem    `cmd:"" help:"put item to the example table"`
 	BatchWriteItems BatchLockItems        `cmd:"" help:"batch put items to the example table"`
 	BatchGetItems   BatchReadLocks        `cmd:"" help:"batch get items from the example table"`
@@ -66,14 +66,30 @@ func (cli *animalTablesCli) AfterApply(ctx *kong.Context) error {
 	return nil
 }
 
+type ScanTable struct {
+	TableName string
+	Limit     int `help:"limit in scan request"`
+	StartFrom string
+}
+
+func (cli *ScanTable) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
+	var out []lock
+	err = table.Scan(ctx, client, &s_locksTable, nil, &out, table.WithLimit(cli.Limit))
+	if err != nil {
+		return err
+	}
+	logger.InfoContext(ctx, "scanned tables", "items", out)
+	return nil
+}
+
 type AnimalTableSeclector struct {
 	AnimalType string `help:"partition key value" required:""`
 	Name       string `help:"sort key value" required:""`
 }
 
-type CreateAnimalTables struct{}
+type CreateTables struct{}
 
-func (cli *CreateAnimalTables) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
+func (cli *CreateTables) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
 	logger.Info("Creating animal table")
 	err = table.CreateTable(ctx, client, &s_animalTable)
 	if err != nil {
@@ -83,9 +99,9 @@ func (cli *CreateAnimalTables) Run(ctx context.Context, logger *slog.Logger, cli
 	return err
 }
 
-type DeleteAnimalTable struct{}
+type DeleteTables struct{}
 
-func (cli *DeleteAnimalTable) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
+func (cli *DeleteTables) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
 	logger.Info("Deleting animal table")
 	err = table.DeleteTable(ctx, client, &s_animalTable)
 	if err != nil {
@@ -322,6 +338,7 @@ type BatchLockItems struct {
 	Items  []string `arg:"" help:"list of items to lock"`
 	Delete bool
 }
+
 type lock struct {
 	LockID string `dynamodbav:"LockID"`
 	Owner  string `dynamodbav:"Owner"`
