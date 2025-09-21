@@ -74,7 +74,7 @@ type ScanTable struct {
 
 func (cli *ScanTable) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
 	var out []lock
-	err = table.Scan(ctx, client, &s_locksTable, nil, &out, table.WithLimit(cli.Limit))
+	err = table.Scan(ctx, client, &s_locksTable, "", nil, &out, table.WithLimit(cli.Limit))
 	if err != nil {
 		return err
 	}
@@ -235,7 +235,7 @@ func simpleFuzzStruct(val any, predefinedFields []KeyValue) (err error) {
 		case reflect.String:
 			fv.SetString(generateString(15))
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			fv.SetInt(rand.Int64())
+			fv.SetInt(rand.Int64() % 1000)
 		case reflect.Bool:
 			r := rand.Int()
 			switch r % 3 {
@@ -359,7 +359,7 @@ func (cli *BatchLockItems) Run(ctx context.Context, logger *slog.Logger, client 
 				Item: lock{
 					LockID: item,
 					Owner:  "cli",
-					TTL:    1700000000,
+					TTL:    rand.Int64(),
 					Info:   fmt.Sprintf("lock for item %s", item),
 				},
 			})

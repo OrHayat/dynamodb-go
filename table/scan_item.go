@@ -27,11 +27,13 @@ type ScanConfig struct {
 func prepareScanRequest(
 	cfg ScanConfig,
 	table *TableDefinition,
+	indexName string,
 	startFrom *Key,
 ) (*dynamodb.ScanInput, error) {
+
 	var startScanFrom map[string]types.AttributeValue
 	if startFrom != nil {
-		key, err := table.getKey(*startFrom)
+		key, err := table.getKeyForIndex(indexName, *startFrom)
 		if err != nil {
 			return nil, &OperationError{
 				operation:   "scan prepare",
@@ -62,7 +64,7 @@ func Scan(
 	ctx context.Context,
 	client ScanAPIClient,
 	table *TableDefinition,
-	startFrom *Key,
+	index string, //pass empty string to scan main table
 	out any,
 	opts ...ScanOptions,
 ) error {
@@ -78,7 +80,7 @@ func Scan(
 	if cfg.Decoder == nil {
 		cfg.Decoder = s_decoder
 	}
-	input, err := prepareScanRequest(cfg, table, startFrom)
+	input, err := prepareScanRequest(cfg, table, index, nil)
 	if err != nil {
 		return err
 	}

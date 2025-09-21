@@ -50,12 +50,14 @@ func prepareCreateTableRequest(table *TableDefinition) (*dynamodb.CreateTableInp
 		return nil, fmt.Errorf("OnDemandThroughput must be nil when BillingMode is not PAY_PER_REQUEST")
 	}
 	input := &dynamodb.CreateTableInput{
-		TableName:             &table.Name,
-		AttributeDefinitions:  attributes,
-		BillingMode:           billingMode,
-		ProvisionedThroughput: table.ProvisionedThroughput,
-		OnDemandThroughput:    table.OnDemandThroughput,
-		KeySchema:             keySchema,
+		TableName:              &table.Name,
+		AttributeDefinitions:   attributes,
+		BillingMode:            billingMode,
+		ProvisionedThroughput:  table.ProvisionedThroughput,
+		OnDemandThroughput:     table.OnDemandThroughput,
+		KeySchema:              keySchema,
+		GlobalSecondaryIndexes: nil,
+		LocalSecondaryIndexes:  nil,
 	}
 
 	return input, nil

@@ -21,10 +21,82 @@ type Billing struct {
 	OnDemandThroughput    *types.OnDemandThroughput    //only for PAY_PER_REQUEST mode
 }
 
+/*
+	type LocalSecondaryIndex struct {
+		IndexName string
+		RangeKey  AttributeDefinition
+	}
+
+	type GlobalSecondaryIndex struct {
+		IndexName  string
+		PrimaryKey AttributeDefinition
+		RangeKey   AttributeDefinition
+	}
+
+	type TableDefinition struct {
+		Name       string
+		PrimaryKey AttributeDefinition
+		RangeKey   AttributeDefinition
+		Billing
+	}
+*/
+
+type LocalSecondaryIndex struct {
+	IndexName string
+	RangeKey  AttributeDefinition
+}
+
+func (lsi *LocalSecondaryIndex) getKey(table *TableDefinition, key Key) (res map[string]types.AttributeValue, err error) {
+
+	res = make(map[string]types.AttributeValue, 2)
+	res[table.PrimaryKey.Name], err = table.PrimaryKey.encodeToAv(key.PK)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode table primary key")
+	}
+	if lsi.RangeKey.Name == "" {
+		return nil, fmt.Errorf("LSI must have range key")
+	}
+	res[lsi.RangeKey.Name], err = lsi.RangeKey.encodeToAv(key.SK)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode index range key")
+	}
+	return res, nil
+}
+
+type GlobalSecondaryIndex struct {
+	IndexName  string
+	PrimaryKey AttributeDefinition //required
+	RangeKey   AttributeDefinition //optional
+}
+
+func (gsi *GlobalSecondaryIndex) getKey(key Key) (res map[string]types.AttributeValue, err error) {
+
+	var count = 2
+	if gsi.RangeKey.Name == "" {
+		count = 1
+	}
+	res = make(map[string]types.AttributeValue, count)
+	av, err := gsi.PrimaryKey.encodeToAv(key.PK)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode table primary key")
+	}
+	res[gsi.PrimaryKey.Name] = av
+	if gsi.RangeKey.Name != "" {
+		av, err = gsi.RangeKey.encodeToAv(key.SK)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode table range key")
+		}
+		res[gsi.RangeKey.Name] = av
+	}
+	return res, nil
+}
+
 type TableDefinition struct {
 	Name       string
 	PrimaryKey AttributeDefinition
 	RangeKey   AttributeDefinition
+	GSI        []GlobalSecondaryIndex
+	LSI        []LocalSecondaryIndex
 	Billing
 }
 
@@ -58,6 +130,28 @@ func (d *TableDefinition) encodedKeyToVal(k types.AttributeValue) any {
 		panic(fmt.Sprintf("unreachable:nsupported key type %T", k))
 	}
 }
+
+// getKeyForIndex returns the encoded key for the index if its provided and the table key if indexName is empty
+func (d *TableDefinition) getKeyForIndex(
+	indexName string, key Key,
+) (res map[string]types.AttributeValue, err error) {
+	if indexName == "" {
+		return d.getKey(key)
+	}
+	for _, gsi := range d.GSI {
+		if gsi.IndexName == indexName {
+			return gsi.getKey(key)
+		}
+	}
+	for _, lsi := range d.LSI {
+		if lsi.IndexName == indexName {
+			return lsi.getKey(d, key)
+		}
+	}
+
+	return nil, fmt.Errorf("index %q not found", indexName)
+}
+
 func (d *TableDefinition) getKey(key Key) (res map[string]types.AttributeValue, err error) {
 
 	var count = 2

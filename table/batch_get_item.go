@@ -68,7 +68,7 @@ type BatchGetItemInput struct {
 	Keys  []Key
 }
 
-func batchGetItemSingleTable(
+func BatchGetItemSingleTable(
 	ctx context.Context,
 	client BatchGetItemClient,
 	table *TableDefinition,
@@ -134,6 +134,6 @@ func BatchGetItemsFromSingleTable[T any](
 	options ...BatchGetItemOptions,
 ) ([]T, error) {
 	var out []T
-	err := batchGetItemSingleTable(ctx, client, table, keys, &out, options...)
+	err := BatchGetItemSingleTable(ctx, client, table, keys, &out, options...)
 	return out, err
 }
