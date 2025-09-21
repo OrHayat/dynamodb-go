@@ -57,6 +57,7 @@ func prepareScanRequest(
 
 	return res, nil
 }
+
 func Scan(
 	ctx context.Context,
 	client ScanAPIClient,
@@ -68,7 +69,6 @@ func Scan(
 	cfg := ScanConfig{
 		ConsistentRead: false,
 	}
-
 	for _, o := range opts {
 		o.applyScanOption(&cfg)
 	}

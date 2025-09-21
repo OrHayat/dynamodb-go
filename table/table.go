@@ -15,10 +15,17 @@ type Key struct {
 	SK any
 }
 
+type Billing struct {
+	BillingMode           types.BillingMode
+	ProvisionedThroughput *types.ProvisionedThroughput //only for PROVISIONED mode
+	OnDemandThroughput    *types.OnDemandThroughput    //only for PAY_PER_REQUEST mode
+}
+
 type TableDefinition struct {
 	Name       string
 	PrimaryKey AttributeDefinition
 	RangeKey   AttributeDefinition
+	Billing
 }
 
 func (d *TableDefinition) ExtractKeys(encodedObject map[string]types.AttributeValue) (pk types.AttributeValue, sk types.AttributeValue, err error) {
