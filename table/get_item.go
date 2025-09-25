@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
@@ -15,9 +16,17 @@ type GetItemClient interface {
 	GetDecoder() *serializer.Decoder //mil imply to use default decoder
 }
 
+type ProjectionBuilder struct {
+	projectionBuilder expression.ProjectionBuilder
+	projectionEnabled bool //marker to know if projection was set by user or not
+}
+
 type GetItemConfig struct {
 	Consistency bool
 	Decoder     *serializer.Decoder
+	ProjectionBuilder
+	// Projection        expression.ProjectionBuilder
+	// projectionEnabled bool //marker to know if projection was set by user or not
 }
 
 type GetItemOptions interface {
@@ -29,13 +38,25 @@ func prepareGetRequest(
 	tableName string,
 	key map[string]types.AttributeValue,
 ) *dynamodb.GetItemInput {
+
+	var projection *string
+	var names map[string]string
+	if cfg.projectionEnabled {
+		b := expression.NewBuilder().WithProjection(cfg.projectionBuilder)
+		expr, err := b.Build()
+		if err == nil {
+			projection = expr.Projection()
+			names = expr.Names()
+		}
+	}
+
 	return &dynamodb.GetItemInput{
 		TableName:                &tableName,
 		Key:                      key,
-		ProjectionExpression:     nil, //TODO:add way to generate it
-		ExpressionAttributeNames: nil, //needed for projection expression incase of unsupported word in the expression useful to not fetch whole record of table across the wire if only part of it needed
+		ProjectionExpression:     projection,
+		ExpressionAttributeNames: names,
 		ConsistentRead:           aws.Bool(cfg.Consistency),
-		ReturnConsumedCapacity:   types.ReturnConsumedCapacityNone, //safe default- usefull for metrics but this package dont help to export metrics
+		ReturnConsumedCapacity:   "", //TODO: add way to return consumed capacity
 	}
 }
 
@@ -49,12 +70,17 @@ func GetItem(
 ) (err error) {
 	cfg := GetItemConfig{
 		Consistency: true,
-		Decoder:     client.GetDecoder(),
+		Decoder:     nil,
 	}
 	for _, o := range opts {
 		o.applyGetItemOption(&cfg)
 	}
-
+	if cfg.Decoder == nil {
+		cfg.Decoder = client.GetDecoder()
+	}
+	if cfg.Decoder == nil {
+		cfg.Decoder = s_decoder
+	}
 	encodedKey, err := table.getKey(key)
 	if err != nil {
 		return &OperationError{

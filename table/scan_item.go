@@ -43,17 +43,18 @@ func prepareScanRequest(
 			internalErr: err,
 		}
 	}
-	var needBuildFilterExpression bool = false
+	var needBuildExpression bool = false
 	b := expression.NewBuilder()
 	if cfg.FilterExpression.IsSet() {
-		needBuildFilterExpression = true
+		needBuildExpression = true
 		b = b.WithFilter(cfg.FilterExpression)
 	}
 
 	var expressionAttributeNames map[string]string
 	var expressionAttributeValues map[string]types.AttributeValue
 	var filterExpression *string
-	if needBuildFilterExpression {
+
+	if needBuildExpression {
 		expr, err := b.Build()
 		if err != nil {
 			return nil, &OperationError{
@@ -67,6 +68,7 @@ func prepareScanRequest(
 		expressionAttributeValues = expr.Values()
 		filterExpression = expr.Filter()
 	}
+
 	res := &dynamodb.ScanInput{
 		TableName:                 aws.String(table.Name),
 		Limit:                     cfg.Limit,

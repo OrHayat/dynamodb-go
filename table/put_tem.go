@@ -41,10 +41,10 @@ func preparePutItemRequest(
 		ConditionExpression:                 nil,
 		ExpressionAttributeNames:            nil,
 		ExpressionAttributeValues:           nil,
-		ReturnConsumedCapacity:              "", //safe default- usefull for metrics but this package dont help to export metricss
-		ReturnItemCollectionMetrics:         "", //can be used to notify/log collections that are close to getting
-		ReturnValues:                        "", //
-		ReturnValuesOnConditionCheckFailure: "", //
+		ReturnConsumedCapacity:              "", //TODO: add way to return consumed capacity
+		ReturnItemCollectionMetrics:         "", //TODO: add way to return item collection metrics
+		ReturnValues:                        "", //TODO: add way to return old item attributes either for user/checking if item not exists incase of custom condition is used
+		ReturnValuesOnConditionCheckFailure: "", // incase of condition check failure return the old item attributes
 	}
 
 	if needBuild {
@@ -133,6 +133,5 @@ func PutItem(
 			sk:          table.encodedKeyToVal(sk),
 		}
 	}
-
 	return nil
 }

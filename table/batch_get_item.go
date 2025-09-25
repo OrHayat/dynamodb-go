@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/orhayat/dynamodb-go/serializer"
@@ -22,26 +23,16 @@ type BatchGetItemOptions interface {
 type BatchGetItemConfig struct {
 	ConsistentRead bool
 	Decoder        *serializer.Decoder
-}
-
-type batchRequestInputForTable struct {
-	Table *TableDefinition
-	Keys  []Key
+	ProjectionBuilder
 }
 
 func prepareBatchGetItemRequestSingleTable(
 	cfg *BatchGetItemConfig,
 	table *TableDefinition,
 	keys []Key,
-	// input batchRequestInputForTable,
 
 ) (request *dynamodb.BatchGetItemInput, err error) {
-	tableRequest := types.KeysAndAttributes{
-		ConsistentRead:           aws.Bool(cfg.ConsistentRead),
-		Keys:                     nil,
-		ProjectionExpression:     nil, //TODO:add way to generate it
-		ExpressionAttributeNames: nil, //needed for projection expression incase of unsupported word in the expression useful to not fetch whole record of table across the wire if only part of it needed
-	}
+	var keysToGet []map[string]types.AttributeValue
 	for _, key := range keys {
 		encodedKey, err := table.getKey(key)
 		if err != nil {
@@ -51,8 +42,25 @@ func prepareBatchGetItemRequestSingleTable(
 				internalErr: err,
 			}
 		}
-		tableRequest.Keys = append(tableRequest.Keys, encodedKey)
+		keysToGet = append(keysToGet, encodedKey)
 	}
+	var projection *string
+	var names map[string]string
+	if cfg.projectionEnabled {
+		b := expression.NewBuilder().WithProjection(cfg.projectionBuilder)
+		expr, err := b.Build()
+		if err == nil {
+			projection = expr.Projection()
+			names = expr.Names()
+		}
+	}
+	tableRequest := types.KeysAndAttributes{
+		ConsistentRead:           aws.Bool(cfg.ConsistentRead),
+		Keys:                     keysToGet,
+		ProjectionExpression:     projection,
+		ExpressionAttributeNames: names,
+	}
+
 	requestedItems := map[string]types.KeysAndAttributes{
 		table.Name: tableRequest,
 	}
