@@ -57,7 +57,7 @@ func prepareScanRequest(
 		ExpressionAttributeValues: nil, //needed for filter/projection expression
 		FilterExpression:          nil, //TODO: add way to filter results server side
 		Select:                    "",  //TODO: add way to limit attributes returned - if query index fetch only part of the record or if projection expression is used
-		Segment:                   nil, //TODO: add way to parallelize scan
+		Segment:                   nil, //TODO: add way to parallelize scan - note paginator need to know about segment id
 		TotalSegments:             nil, //TODO: add way to parallelize scan
 	}
 

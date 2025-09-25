@@ -134,18 +134,33 @@ func (d *TableDefinition) getKeyForIndex(
 	if indexName == "" {
 		return d.getKey(key)
 	}
-	for _, gsi := range d.GSI {
-		if gsi.IndexName == indexName {
-			return gsi.getKey(key)
-		}
+	if gsi := d.getGSI(indexName); gsi != nil {
+		return gsi.getKey(key)
 	}
-	for _, lsi := range d.LSI {
-		if lsi.IndexName == indexName {
-			return lsi.getKey(d, key)
-		}
+
+	if lsi := d.getLSI(indexName); lsi != nil {
+		return lsi.getKey(d, key)
 	}
 
 	return nil, fmt.Errorf("index %q not found", indexName)
+}
+
+func (d *TableDefinition) getGSI(indexName string) *GlobalSecondaryIndex {
+	for i, gsi := range d.GSI {
+		if gsi.IndexName == indexName {
+			return &d.GSI[i]
+		}
+	}
+	return nil
+}
+
+func (d *TableDefinition) getLSI(indexName string) *LocalSecondaryIndex {
+	for i, lsi := range d.LSI {
+		if lsi.IndexName == indexName {
+			return &d.LSI[i]
+		}
+	}
+	return nil
 }
 
 func (d *TableDefinition) getKey(key Key) (res map[string]types.AttributeValue, err error) {
