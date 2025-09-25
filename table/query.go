@@ -46,7 +46,12 @@ func prepareQueryRequest(
 	b := expression.NewBuilder()
 	if cfg.ConsistentRead && indexName != "" {
 		if table.getLSI(indexName) != nil {
-			return nil, fmt.Errorf("cannot use consistent read when querying LSI index %s", indexName)
+			return nil, &OperationError{
+				operation:   "query prepare",
+				table:       table,
+				index:       indexName,
+				internalErr: fmt.Errorf("cannot use consistent read when querying LSI index %s", indexName),
+			}
 		}
 	}
 	exp, err := b.Build()
@@ -54,6 +59,7 @@ func prepareQueryRequest(
 		return nil, &OperationError{
 			operation:   "query prepare",
 			table:       table,
+			index:       indexName,
 			internalErr: err,
 		}
 	}

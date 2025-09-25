@@ -94,6 +94,32 @@ type TableDefinition struct {
 	Billing
 }
 
+func (d *TableDefinition) getPkName(index string) (string, error) {
+	if index == "" {
+		return d.PrimaryKey.Name, nil
+	}
+	if gsi := d.getGSI(index); gsi != nil {
+		return gsi.PrimaryKey.Name, nil
+	}
+	if lsi := d.getLSI(index); lsi != nil {
+		return d.PrimaryKey.Name, nil
+	}
+	return "", fmt.Errorf("index %q not found", index)
+}
+
+func (d *TableDefinition) getSKName(index string) (string, error) {
+	if index == "" {
+		return d.RangeKey.Name, nil
+	}
+	if gsi := d.getGSI(index); gsi != nil {
+		return gsi.RangeKey.Name, nil
+	}
+	if lsi := d.getLSI(index); lsi != nil {
+		return lsi.RangeKey.Name, nil
+	}
+	return "", fmt.Errorf("index %q not found", index)
+}
+
 func (d *TableDefinition) ExtractKeys(encodedObject map[string]types.AttributeValue) (pk types.AttributeValue, sk types.AttributeValue, err error) {
 	pkVal := encodedObject[d.PrimaryKey.Name]
 	if pkVal == nil {

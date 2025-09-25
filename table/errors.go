@@ -16,6 +16,7 @@ type OperationError struct {
 	table       *TableDefinition
 	pk          any
 	sk          any
+	index       string
 }
 
 func (e *OperationError) JSON() string {
@@ -49,24 +50,31 @@ func (e *OperationError) ErrorText() string {
 		sb.WriteString(" on table " + e.table.Name)
 
 		keyParts := []string{}
-
-		if e.table.PrimaryKey.Name != "" {
-			if e.pk != nil {
-				keyParts = append(keyParts,
-					fmt.Sprintf("pk=%s=%v", e.table.PrimaryKey.Name, e.pk))
-			} else {
-				keyParts = append(keyParts,
-					fmt.Sprintf("pk=%s", e.table.PrimaryKey.Name))
+		pkName, err := e.table.getPkName(e.index)
+		if err != nil {
+			sb.WriteString(":" + err.Error())
+		} else {
+			if pkName != "" {
+				if e.pk != nil {
+					keyParts = append(keyParts,
+						fmt.Sprintf("pk=%s=%v", pkName, e.pk))
+				} else {
+					keyParts = append(keyParts,
+						fmt.Sprintf("pk=%s", pkName))
+				}
 			}
 		}
 
-		if e.table.RangeKey.Name != "" {
+		skName, err := e.table.getSKName(e.index)
+		if err != nil {
+			sb.WriteString(":" + err.Error())
+		} else if skName != "" {
 			if e.sk != nil {
 				keyParts = append(keyParts,
-					fmt.Sprintf("sk=%s=%v", e.table.RangeKey.Name, e.sk))
+					fmt.Sprintf("sk=%s=%v", skName, e.sk))
 			} else {
 				keyParts = append(keyParts,
-					fmt.Sprintf("sk=%s", e.table.RangeKey.Name))
+					fmt.Sprintf("sk=%s", skName))
 			}
 		}
 

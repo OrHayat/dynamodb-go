@@ -39,6 +39,7 @@ func prepareScanRequest(
 			return nil, &OperationError{
 				operation:   "scan prepare",
 				table:       table,
+				index:       indexName,
 				internalErr: err,
 			}
 		}
