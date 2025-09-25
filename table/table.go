@@ -22,6 +22,13 @@ type PaginationKey struct {
 	userKey    Key
 }
 
+func (p PaginationKey) resolveExclusiveStartKey(table *TableDefinition, indexName string) (map[string]types.AttributeValue, error) {
+	if p.useUserKey {
+		return table.getKeyForIndex(indexName, p.userKey)
+	}
+	return p.encodedKey, nil
+}
+
 func NewPaginationKey(key Key) PaginationKey {
 	return PaginationKey{
 		useUserKey: true,
@@ -107,6 +114,19 @@ func (d *TableDefinition) getPkName(index string) (string, error) {
 	return "", fmt.Errorf("index %q not found", index)
 }
 
+func (d *TableDefinition) getSkName(index string) (string, error) {
+	if index == "" {
+		return d.RangeKey.Name, nil
+	}
+	if gsi := d.getGSI(index); gsi != nil {
+		return gsi.RangeKey.Name, nil
+	}
+	if lsi := d.getLSI(index); lsi != nil {
+		return d.RangeKey.Name, nil
+	}
+	return "", fmt.Errorf("index %q not found", index)
+}
+
 func (d *TableDefinition) getSKName(index string) (string, error) {
 	if index == "" {
 		return d.RangeKey.Name, nil
@@ -147,7 +167,7 @@ func (d *TableDefinition) encodedKeyToVal(k types.AttributeValue) any {
 		return v.Value
 	default:
 		//unreachable
-		panic(fmt.Sprintf("unreachable:nsupported key type %T", k))
+		panic(fmt.Sprintf("unreachable:unsupported key type %T", k))
 	}
 }
 
@@ -171,6 +191,36 @@ func (d *TableDefinition) getKeyForIndex(
 	return nil, fmt.Errorf("index %q not found", indexName)
 }
 
+func (d *TableDefinition) getPkForIndex(
+	indexName string, pk any,
+) (res types.AttributeValue, err error) {
+	if indexName == "" {
+		return d.PrimaryKey.encodeToAv(pk)
+	}
+	if gsi := d.getGSI(indexName); gsi != nil {
+		return gsi.PrimaryKey.encodeToAv(pk)
+	}
+	if lsi := d.getLSI(indexName); lsi != nil {
+		return d.PrimaryKey.encodeToAv(pk)
+	}
+	return nil, fmt.Errorf("index %q not found", indexName)
+}
+
+func (d *TableDefinition) getSkForIndex(
+	indexName string, sk any,
+) (res types.AttributeValue, err error) {
+	if indexName == "" {
+		return d.RangeKey.encodeToAv(sk)
+	}
+	if gsi := d.getGSI(indexName); gsi != nil {
+		return gsi.RangeKey.encodeToAv(sk)
+	}
+	if lsi := d.getLSI(indexName); lsi != nil {
+		return lsi.RangeKey.encodeToAv(sk)
+	}
+	return nil, fmt.Errorf("index %q not found", indexName)
+}
+
 func (d *TableDefinition) getGSI(indexName string) *GlobalSecondaryIndex {
 	for i, gsi := range d.GSI {
 		if gsi.IndexName == indexName {
@@ -189,6 +239,7 @@ func (d *TableDefinition) getLSI(indexName string) *LocalSecondaryIndex {
 	return nil
 }
 
+// getKey returns the encoded key for the table
 func (d *TableDefinition) getKey(key Key) (res map[string]types.AttributeValue, err error) {
 
 	var count = 2

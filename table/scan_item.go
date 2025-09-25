@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/orhayat/dynamodb-go/serializer"
@@ -19,9 +20,10 @@ type ScanOptions interface {
 }
 
 type ScanConfig struct {
-	ConsistentRead bool
-	Decoder        *serializer.Decoder
-	Limit          *int32
+	ConsistentRead   bool
+	Decoder          *serializer.Decoder
+	FilterExpression expression.ConditionBuilder
+	Limit            *int32
 }
 
 func prepareScanRequest(
@@ -32,31 +34,48 @@ func prepareScanRequest(
 
 ) (*dynamodb.ScanInput, error) {
 
-	var startScanFrom map[string]types.AttributeValue
-	if paginationKey.useUserKey {
-		key, err := table.getKeyForIndex(indexName, paginationKey.userKey)
+	startScanFrom, err := paginationKey.resolveExclusiveStartKey(table, indexName)
+	if err != nil {
+		return nil, &OperationError{
+			operation:   "scan prepare",
+			table:       table,
+			index:       indexName,
+			internalErr: err,
+		}
+	}
+	var needBuildFilterExpression bool = false
+	b := expression.NewBuilder()
+	if cfg.FilterExpression.IsSet() {
+		needBuildFilterExpression = true
+		b = b.WithFilter(cfg.FilterExpression)
+	}
+
+	var expressionAttributeNames map[string]string
+	var expressionAttributeValues map[string]types.AttributeValue
+	var filterExpression *string
+	if needBuildFilterExpression {
+		expr, err := b.Build()
 		if err != nil {
 			return nil, &OperationError{
-				operation:   "scan prepare",
+				operation:   "scan prepare build filter expression",
 				table:       table,
 				index:       indexName,
 				internalErr: err,
 			}
 		}
-		startScanFrom = key
-	} else {
-		startScanFrom = paginationKey.encodedKey
+		expressionAttributeNames = expr.Names()
+		expressionAttributeValues = expr.Values()
+		filterExpression = expr.Filter()
 	}
-
 	res := &dynamodb.ScanInput{
 		TableName:                 aws.String(table.Name),
 		Limit:                     cfg.Limit,
 		ConsistentRead:            aws.Bool(cfg.ConsistentRead),
 		ExclusiveStartKey:         startScanFrom,
 		ProjectionExpression:      nil, //TODO: add way to support projection expression
-		ExpressionAttributeNames:  nil, //needed for filter/projection expression incase of unsupported word in the expression
-		ExpressionAttributeValues: nil, //needed for filter/projection expression
-		FilterExpression:          nil, //TODO: add way to filter results server side
+		ExpressionAttributeNames:  expressionAttributeNames,
+		ExpressionAttributeValues: expressionAttributeValues,
+		FilterExpression:          filterExpression,
 		Select:                    "",  //TODO: add way to limit attributes returned - if query index fetch only part of the record or if projection expression is used
 		Segment:                   nil, //TODO: add way to parallelize scan - note paginator need to know about segment id
 		TotalSegments:             nil, //TODO: add way to parallelize scan

@@ -2,6 +2,7 @@ package table
 
 import (
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/orhayat/dynamodb-go/serializer"
 )
 
@@ -105,4 +106,46 @@ func (o LimitOption) applyScanOption(cfg *ScanConfig) {
 	if o.Limit > 0 {
 		cfg.Limit = aws.Int32(int32(o.Limit))
 	}
+}
+
+type ScanKeysOrder int
+
+const (
+	ScanKeysOrderUndefined ScanKeysOrder = iota
+	ScanKeysOrderAscending
+	ScanKeysOrderDescending
+)
+
+var _ QueryOptions = ScanKeysOrder(0)
+
+func WithScanKeysOrder(order ScanKeysOrder) ScanKeysOrder {
+	return order
+}
+
+func (o ScanKeysOrder) applyQueryOption(cfg *QueryConfig) {
+	cfg.ScanKeysOrder = o
+}
+
+// ------------ FilterOption ----------------
+func WithFilter(filterExpression expression.ConditionBuilder) FilterOption {
+	return FilterOption{
+		FilterExpression: filterExpression,
+	}
+}
+
+var _ QueryOptions = FilterOption{}
+var _ ScanOptions = FilterOption{}
+
+type FilterOption struct {
+	FilterExpression expression.ConditionBuilder
+}
+
+// applyScanOption implements ScanOptions.
+func (o FilterOption) applyScanOption(cfg *ScanConfig) {
+	cfg.FilterExpression = o.FilterExpression
+}
+
+// applyQueryOption implements QueryOptions.
+func (o FilterOption) applyQueryOption(cfg *QueryConfig) {
+	cfg.FilterExpression = o.FilterExpression
 }
