@@ -15,31 +15,25 @@ type Key struct {
 	SK any
 }
 
+// exactly one of the fields should be set empty struct will be used to indicate no pagination key and start from beginning of the table/index
+type PaginationKey struct {
+	encodedKey map[string]types.AttributeValue
+	useUserKey bool
+	userKey    Key
+}
+
+func NewPaginationKey(key Key) PaginationKey {
+	return PaginationKey{
+		useUserKey: true,
+		userKey:    key,
+	}
+}
+
 type Billing struct {
 	BillingMode           types.BillingMode
 	ProvisionedThroughput *types.ProvisionedThroughput //only for PROVISIONED mode
 	OnDemandThroughput    *types.OnDemandThroughput    //only for PAY_PER_REQUEST mode
 }
-
-/*
-	type LocalSecondaryIndex struct {
-		IndexName string
-		RangeKey  AttributeDefinition
-	}
-
-	type GlobalSecondaryIndex struct {
-		IndexName  string
-		PrimaryKey AttributeDefinition
-		RangeKey   AttributeDefinition
-	}
-
-	type TableDefinition struct {
-		Name       string
-		PrimaryKey AttributeDefinition
-		RangeKey   AttributeDefinition
-		Billing
-	}
-*/
 
 type LocalSecondaryIndex struct {
 	IndexName string
@@ -130,6 +124,8 @@ func (d *TableDefinition) encodedKeyToVal(k types.AttributeValue) any {
 		panic(fmt.Sprintf("unreachable:nsupported key type %T", k))
 	}
 }
+
+// func (d *TableDefinition) encodeForQuery(){}
 
 // getKeyForIndex returns the encoded key for the index if its provided and the table key if indexName is empty
 func (d *TableDefinition) getKeyForIndex(

@@ -28,12 +28,13 @@ func prepareScanRequest(
 	cfg ScanConfig,
 	table *TableDefinition,
 	indexName string,
-	startFrom *Key,
+	paginationKey PaginationKey,
+
 ) (*dynamodb.ScanInput, error) {
 
 	var startScanFrom map[string]types.AttributeValue
-	if startFrom != nil {
-		key, err := table.getKeyForIndex(indexName, *startFrom)
+	if paginationKey.useUserKey {
+		key, err := table.getKeyForIndex(indexName, paginationKey.userKey)
 		if err != nil {
 			return nil, &OperationError{
 				operation:   "scan prepare",
@@ -42,7 +43,10 @@ func prepareScanRequest(
 			}
 		}
 		startScanFrom = key
+	} else {
+		startScanFrom = paginationKey.encodedKey
 	}
+
 	res := &dynamodb.ScanInput{
 		TableName:                 aws.String(table.Name),
 		Limit:                     cfg.Limit,
@@ -65,9 +69,10 @@ func Scan(
 	client ScanAPIClient,
 	table *TableDefinition,
 	index string, //pass empty string to scan main table
+	paginationKey PaginationKey, //pass empty struct to start from beginning of table/index
 	out any,
 	opts ...ScanOptions,
-) error {
+) (nextPage PaginationKey, err error) {
 	cfg := ScanConfig{
 		ConsistentRead: false,
 	}
@@ -80,25 +85,42 @@ func Scan(
 	if cfg.Decoder == nil {
 		cfg.Decoder = s_decoder
 	}
-	input, err := prepareScanRequest(cfg, table, index, nil)
+	input, err := prepareScanRequest(cfg, table, index, paginationKey)
 	if err != nil {
-		return err
+		return nextPage, err
 	}
 	response, err := client.Scan(ctx, input)
 	if err != nil {
-		return &OperationError{
+		return nextPage, &OperationError{
 			operation:   "scan",
 			table:       table,
 			internalErr: err,
 		}
 	}
+	nextPage = PaginationKey{
+		encodedKey: response.LastEvaluatedKey,
+	}
+
 	err = serializer.UnmarshalListOfMaps(cfg.Decoder, response.Items, out)
 	if err != nil {
-		return &OperationError{
+		return nextPage, &OperationError{
 			operation:   "scan unmarshal",
 			table:       table,
 			internalErr: err,
 		}
 	}
-	return nil
+
+	return nextPage, nil
+}
+
+func ScanOf[T any](
+	ctx context.Context,
+	client ScanAPIClient,
+	table *TableDefinition,
+	index string, //pass empty string to scan main table
+	paginationKey PaginationKey, //pass empty struct to start from beginning of table/index
+	opts ...ScanOptions,
+) (page []T, nextPage PaginationKey, err error) {
+	nextPage, err = Scan(ctx, client, table, index, paginationKey, &page, opts...)
+	return page, nextPage, err
 }
