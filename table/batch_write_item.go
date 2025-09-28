@@ -119,6 +119,9 @@ type WriteRequest struct {
 	PutRequests []PutRequest
 }
 
+// BatchWriteItems performs batch write operations (put and delete) on multiple items across one or more tables.
+// Write requests behave like upsert items, meaning that if an item with the same primary key already exists, it will be replaced.
+// Delete requests will remove the item with the specified primary key. and will not return an error if the item does not exist.
 func BatchWriteItems(
 	ctx context.Context,
 	client BatchPutItemsClient,

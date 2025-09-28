@@ -18,54 +18,118 @@ type PutItemOptions interface {
 	applyPutItemOption(*PutItemConfig)
 }
 
-func preparePutItemRequest(
+type PutItemConfig struct {
+	Encoder *serializer.Encoder
+}
+
+func putRequestPrepareConditionalCheck(
 	table *TableDefinition,
 	cfg *PutItemConfig,
-	encodedItem map[string]types.AttributeValue,
-) (request *dynamodb.PutItemInput, err error) {
-	b := expression.NewBuilder()
-	var needBuild bool = false
-
-	if !cfg.AllowUpsert {
-		conditionExpression := expression.AttributeNotExists(expression.Name(table.PrimaryKey.Name))
+	upsert bool,
+) (cond expression.ConditionBuilder) {
+	if !upsert {
+		cond = expression.AttributeNotExists(expression.Name(table.PrimaryKey.Name))
 		if table.RangeKey.Name != "" {
-			conditionExpression = conditionExpression.And(expression.AttributeNotExists(expression.Name(table.RangeKey.Name)))
+			cond = cond.And(expression.AttributeNotExists(expression.Name(table.RangeKey.Name)))
 		}
-		b = b.WithCondition(conditionExpression)
-		needBuild = true
+		return cond
 	}
+	return cond
+}
 
-	request = &dynamodb.PutItemInput{
-		TableName:                           &table.Name,
-		Item:                                encodedItem,
-		ConditionExpression:                 nil,
-		ExpressionAttributeNames:            nil,
-		ExpressionAttributeValues:           nil,
-		ReturnConsumedCapacity:              "", //TODO: add way to return consumed capacity
-		ReturnItemCollectionMetrics:         "", //TODO: add way to return item collection metrics
-		ReturnValues:                        "", //TODO: add way to return old item attributes either for user/checking if item not exists incase of custom condition is used
-		ReturnValuesOnConditionCheckFailure: "", // incase of condition check failure return the old item attributes
-	}
+func preparePutItemRequest(
+	table *TableDefinition,
+	conditionalExpression expression.ConditionBuilder,
+	encodedItem map[string]types.AttributeValue,
+) (*dynamodb.PutItemInput, error) {
 
-	if needBuild {
+	var names map[string]string
+	var values map[string]types.AttributeValue
+	var condition *string
+
+	if conditionalExpression.IsSet() {
+		b := expression.NewBuilder()
+		b = b.WithCondition(conditionalExpression)
+		var err error
 		expr, err := b.Build()
 		if err != nil {
 			return nil, err
 		}
-		request.ConditionExpression = expr.Condition()
-		request.ExpressionAttributeNames = expr.Names()
-		request.ExpressionAttributeValues = expr.Values()
+		names = expr.Names()
+		values = expr.Values()
+		condition = expr.Condition()
+	}
+
+	request := &dynamodb.PutItemInput{
+		TableName:                           &table.Name,
+		Item:                                encodedItem,
+		ConditionExpression:                 condition,
+		ExpressionAttributeNames:            names,
+		ExpressionAttributeValues:           values,
+		ReturnConsumedCapacity:              "", //TODO: add way to return consumed capacity
+		ReturnItemCollectionMetrics:         "", //TODO: add way to return item collection metrics
+		ReturnValues:                        "",
+		ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
 	}
 	return request, nil
 }
 
-type PutItemConfig struct {
-	Encoder *serializer.Encoder
-	//default is false and incase item existing it will fail the request
-	// - if true, will allow overwriting existing items with same PK/SK
-	AllowUpsert bool
+func putOrUpsertItem(
+	ctx context.Context,
+	client PutItemClient,
+	table *TableDefinition,
+	item any,
+	encoder *serializer.Encoder,
+	conditionalExpression expression.ConditionBuilder,
+	upsert bool,
+) (err error) {
+	encodedItem, err := serializer.MarshalMap(encoder, item)
+	if err != nil {
+		return err
+	}
+	pk, sk, err := table.ExtractKeys(encodedItem) //ensure PK and SK are present
+	if err != nil {
+		return &OperationError{
+			operation:   "put request validation",
+			table:       table,
+			internalErr: err,
+			pk:          table.encodedKeyToVal(pk),
+			sk:          table.encodedKeyToVal(sk),
+		}
+	}
+	request, err := preparePutItemRequest(table, conditionalExpression, encodedItem)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.PutItem(ctx, request)
+	if err != nil {
+		if !upsert {
+			//check if need to return item not exists.
+			if _, ok := ErrorAs[*types.ConditionalCheckFailedException](err); ok {
+				return &OperationError{
+					operation:   "delete item",
+					table:       table,
+					pk:          table.encodedKeyToVal(pk),
+					sk:          table.encodedKeyToVal(sk),
+					internalErr: ErrAlreadyExists,
+				}
+			}
+		}
+		return &OperationError{
+			operation:   "put item",
+			table:       table,
+			internalErr: err,
+			pk:          table.encodedKeyToVal(pk),
+			sk:          table.encodedKeyToVal(sk),
+		}
+	}
+	return nil
 }
 
+// put new item on the table
+// if item already exists function will fail
+// to allow replacing of existing use UpsertItem function
 func PutItem(
 	ctx context.Context,
 	client PutItemClient,
@@ -85,53 +149,9 @@ func PutItem(
 	if cfg.Encoder == nil {
 		cfg.Encoder = s_encoder
 	}
-	encodedItem, err := serializer.MarshalMap(cfg.Encoder, item)
-	if err != nil {
-		return &OperationError{
-			operation:   "put item encoding",
-			table:       table,
-			internalErr: err,
-		}
+	conditionExpression := expression.AttributeNotExists(expression.Name(table.PrimaryKey.Name))
+	if table.RangeKey.Name != "" {
+		conditionExpression = conditionExpression.And(expression.AttributeNotExists(expression.Name(table.RangeKey.Name)))
 	}
-	pk, sk, err := table.ExtractKeys(encodedItem) //ensure PK and SK are present
-	if err != nil {
-		return &OperationError{
-			operation:   "put request validation",
-			table:       table,
-			internalErr: err,
-			pk:          table.encodedKeyToVal(pk),
-			sk:          table.encodedKeyToVal(sk),
-		}
-	}
-	request, err := preparePutItemRequest(table, cfg, encodedItem)
-	if err != nil {
-		return &OperationError{
-			operation:   "put request preparation",
-			table:       table,
-			internalErr: err,
-			pk:          table.encodedKeyToVal(pk),
-			sk:          table.encodedKeyToVal(sk),
-		}
-	}
-
-	_, err = client.PutItem(ctx, request)
-	if err != nil {
-		if _, ok := ErrorAs[*types.ConditionalCheckFailedException](err); ok {
-			return &OperationError{
-				operation:   "delete item",
-				table:       table,
-				pk:          table.encodedKeyToVal(pk),
-				sk:          table.encodedKeyToVal(sk),
-				internalErr: ErrAlreadyExists,
-			}
-		}
-		return &OperationError{
-			operation:   "put item",
-			table:       table,
-			internalErr: err,
-			pk:          table.encodedKeyToVal(pk),
-			sk:          table.encodedKeyToVal(sk),
-		}
-	}
-	return nil
+	return putOrUpsertItem(ctx, client, table, item, cfg.Encoder, conditionExpression, false)
 }

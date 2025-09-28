@@ -74,7 +74,7 @@ type ScanTable struct {
 
 func (cli *ScanTable) Run(ctx context.Context, logger *slog.Logger, client *table.Client) (err error) {
 	var out []lock
-	err = table.Scan(ctx, client, &s_locksTable, "", nil, &out, table.WithLimit(cli.Limit))
+	_, err = table.Scan(ctx, client, &s_locksTable, "", table.PaginationKey{}, &out, table.WithLimit(cli.Limit))
 	if err != nil {
 		return err
 	}
@@ -397,7 +397,11 @@ func (cli *PutAnimalTableItem) Run(ctx context.Context, logger *slog.Logger, cli
 	if err != nil {
 		return fmt.Errorf("put item:%w", err)
 	}
-	err = table.PutItem(ctx, client, &s_animalTable, entry, table.WithUpsert(cli.Upsert))
+	if cli.Upsert {
+		err = table.UpsertItem(ctx, client, &s_animalTable, entry)
+	} else {
+		err = table.PutItem(ctx, client, &s_animalTable, entry)
+	}
 	if err != nil {
 		return err
 	}

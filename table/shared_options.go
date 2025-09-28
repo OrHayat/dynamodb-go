@@ -65,20 +65,6 @@ func (e EncoderOption) applyPutItemOption(cfg *PutItemConfig) {
 	cfg.Encoder = e.Encoder
 }
 
-// upsertOption....
-
-type UpsertOption bool
-
-func WithUpsert(allowUpsert bool) UpsertOption {
-	return UpsertOption(allowUpsert)
-}
-
-var _ PutItemOptions = UpsertOption(false)
-
-func (o UpsertOption) applyPutItemOption(cfg *PutItemConfig) {
-	cfg.AllowUpsert = bool(o)
-}
-
 // consistencyOption....
 
 var _ GetItemOptions = ConsistencyOption(false)
@@ -128,6 +114,22 @@ func WithScanKeysOrder(order ScanKeysOrder) ScanKeysOrder {
 
 func (o ScanKeysOrder) applyQueryOption(cfg *QueryConfig) {
 	cfg.ScanKeysOrder = o
+}
+
+func WithConditionalCheck(cond expression.ConditionBuilder) ConditionalCheckOption {
+	return ConditionalCheckOption{
+		ConditionExpression: cond,
+	}
+}
+
+var _ UpsertItemOptions = ConditionalCheckOption{}
+
+type ConditionalCheckOption struct {
+	ConditionExpression expression.ConditionBuilder
+}
+
+func (o ConditionalCheckOption) applyUpsertItemOption(cfg *UpsertItemConfig) {
+	cfg.ConditionalCheck = o.ConditionExpression
 }
 
 // ------------ FilterOption ----------------
@@ -248,7 +250,6 @@ func getStructProjection[T any](tagName string) ProjectionOption {
 	}
 	res, _ := structProjectionCache.LoadOrStore(key, opt)
 	return res.(ProjectionOption)
-
 }
 
 // WithProjectionForType returns a ProjectionOption that includes all struct fields
