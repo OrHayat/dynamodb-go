@@ -12,7 +12,16 @@ import (
 
 type TransactionGetItemClient interface {
 	TransactGetItems(ctx context.Context, params *dynamodb.TransactGetItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactGetItemsOutput, error)
+	GetDecoder() *serializer.Decoder
 }
+type TransactionGetItemOptions interface {
+	applyTransactionGetItemOption(cfg *TransactionGetItemConfig)
+}
+
+type TransactionGetItemConfig struct {
+	Decoder *serializer.Decoder
+}
+
 type TransactionGetRequet struct {
 	Table              *TableDefinition
 	Key                Key
@@ -61,8 +70,19 @@ func TransactionGetItem(
 	ctx context.Context,
 	client TransactionGetItemClient,
 	getRequests []TransactionGetRequet,
+	opts ...TransactionGetItemOptions,
 ) (err error) {
+	cfg := TransactionGetItemConfig{}
 
+	for _, opt := range opts {
+		opt.applyTransactionGetItemOption(&cfg)
+	}
+	if cfg.Decoder == nil {
+		cfg.Decoder = client.GetDecoder()
+	}
+	if cfg.Decoder == nil {
+		cfg.Decoder = s_decoder
+	}
 	request, err := prepareGetTransactionRequest(getRequests)
 	if err != nil {
 		return err
@@ -89,7 +109,7 @@ func TransactionGetItem(
 			}
 		}
 
-		err = serializer.UnmarshalMap(nil, resp.Item, &getRequests[i].Out)
+		err = serializer.UnmarshalMap(cfg.Decoder, resp.Item, &getRequests[i].Out)
 		if err != nil {
 			return &OperationError{
 				operation:   "transaction get item unmarshal",
@@ -103,74 +123,3 @@ func TransactionGetItem(
 
 	return err
 }
-
-// func TransactGetItems(ctx context.Context) (err error) {
-// 	c := dynamodb.Client{}
-// 	request, er := prepareGetTransactionRequest()
-// 	if er != nil {
-// 		return
-// 	}
-// 	out, err := c.TransactGetItems(ctx, request)
-// 	if err != nil {
-// 		// Handle error
-// 		return
-// 	}
-
-// 	// outputs := out.Responses[0].
-// 	// Use output
-// }
-
-// func prepareWriteTransactionRequest() (*dynamodb.TransactWriteItemsInput, error) {
-// 	request := &dynamodb.TransactWriteItemsInput{
-// 		TransactItems: []types.TransactWriteItem{
-// 			{
-// 				Put: &types.Put{
-// 					Item:                      nil,
-// 					TableName:                 nil,
-// 					ConditionExpression:       nil,
-// 					ExpressionAttributeNames:  nil,
-// 					ExpressionAttributeValues: nil,
-// 				},
-// 				Delete: &types.Delete{
-// 					Key:                       nil,
-// 					TableName:                 nil,
-// 					ConditionExpression:       nil,
-// 					ExpressionAttributeNames:  nil,
-// 					ExpressionAttributeValues: nil,
-// 				},
-// 				Update: &types.Update{
-// 					Key:                       nil,
-// 					TableName:                 nil,
-// 					UpdateExpression:          nil,
-// 					ConditionExpression:       nil,
-// 					ExpressionAttributeNames:  nil,
-// 					ExpressionAttributeValues: nil,
-// 				},
-// 				ConditionCheck: &types.ConditionCheck{
-// 					Key:                       nil,
-// 					TableName:                 nil,
-// 					ConditionExpression:       nil,
-// 					ExpressionAttributeNames:  nil,
-// 					ExpressionAttributeValues: nil,
-// 				},
-// 			},
-// 		},
-// 	}
-// 	return request, nil
-// }
-// func TransactWriteItems(ctx context.Context) (err error) {
-// 	c := dynamodb.Client{}
-// 	request, er := prepareGetTransactionRequest()
-// 	if er != nil {
-// 		return
-// 	}
-// 	out, err := c.TransactWriteItems(ctx, request)
-// 	if err != nil {
-// 		// Handle error
-// 		return
-// 	}
-
-// 	return nil
-// 	// outputs := out.Responses[0].
-// 	// Use output
-// }

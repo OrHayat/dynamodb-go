@@ -21,9 +21,15 @@ func WithDecoder(decoder *serializer.Decoder) DecoderOption {
 var _ GetItemOptions = DecoderOption{}
 var _ BatchGetItemOptions = DecoderOption{}
 var _ ScanOptions = DecoderOption{}
+var _ TransactionGetItemOptions = DecoderOption{}
 
 type DecoderOption struct {
 	Decoder *serializer.Decoder
+}
+
+// applyTransactionGetItemOption implements TransactionGetItemOptions.
+func (o DecoderOption) applyTransactionGetItemOption(cfg *TransactionGetItemConfig) {
+	cfg.Decoder = o.Decoder
 }
 
 // applyScanOption implements ScanOptions.
