@@ -25,8 +25,6 @@ type GetItemConfig struct {
 	Consistency bool
 	Decoder     *serializer.Decoder
 	ProjectionBuilder
-	// Projection        expression.ProjectionBuilder
-	// projectionEnabled bool //marker to know if projection was set by user or not
 }
 
 type GetItemOptions interface {
@@ -37,17 +35,19 @@ func prepareGetRequest(
 	cfg GetItemConfig,
 	tableName string,
 	key map[string]types.AttributeValue,
-) *dynamodb.GetItemInput {
+) (*dynamodb.GetItemInput, error) {
 
 	var projection *string
 	var names map[string]string
 	if cfg.projectionEnabled {
 		b := expression.NewBuilder().WithProjection(cfg.projectionBuilder)
 		expr, err := b.Build()
-		if err == nil {
-			projection = expr.Projection()
-			names = expr.Names()
+		if err != nil {
+			return nil, err
 		}
+		names = expr.Names()
+		projection = expr.Projection()
+
 	}
 
 	return &dynamodb.GetItemInput{
@@ -57,7 +57,7 @@ func prepareGetRequest(
 		ExpressionAttributeNames: names,
 		ConsistentRead:           aws.Bool(cfg.Consistency),
 		ReturnConsumedCapacity:   "", //TODO: add way to return consumed capacity
-	}
+	}, nil
 }
 
 func GetItem(
@@ -92,7 +92,16 @@ func GetItem(
 		}
 	}
 
-	request := prepareGetRequest(cfg, table.Name, encodedKey)
+	request, err := prepareGetRequest(cfg, table.Name, encodedKey)
+	if err != nil {
+		return &OperationError{
+			operation:   "get item prepare request",
+			table:       table,
+			pk:          key.PK,
+			sk:          key.SK,
+			internalErr: err,
+		}
+	}
 	res, err := client.GetItem(ctx, request)
 	if err != nil {
 		return &OperationError{
