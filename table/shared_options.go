@@ -122,13 +122,18 @@ func WithConditionalCheck(cond expression.ConditionBuilder) ConditionalCheckOpti
 	}
 }
 
-var _ UpsertItemOptions = ConditionalCheckOption{}
+var _ PutOrReplaceOptions = ConditionalCheckOption{}
+var _ UpdateOptions = ConditionalCheckOption{}
 
 type ConditionalCheckOption struct {
 	ConditionExpression expression.ConditionBuilder
 }
 
-func (o ConditionalCheckOption) applyUpsertItemOption(cfg *UpsertItemConfig) {
+func (o ConditionalCheckOption) applyUpdateOption(cfg *UpdateConfig) {
+	cfg.ConditionalCheck = o.ConditionExpression
+}
+
+func (o ConditionalCheckOption) applyPutOrReplaceItemOption(cfg *PutOrReplaceConfig) {
 	cfg.ConditionalCheck = o.ConditionExpression
 }
 

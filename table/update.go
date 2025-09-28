@@ -142,11 +142,3 @@ func UpdateItem(ctx context.Context, client UpdateItemsClient, table *TableDefin
 func UpsertItem(ctx context.Context, client UpdateItemsClient, table *TableDefinition, key Key, update ItemUpdate, opts ...UpdateOptions) (err error) {
 	return createOrUpdateItemInternal(ctx, client, table, key, update, false, opts...)
 }
-
-func ensureKeyExists(table *TableDefinition) expression.ConditionBuilder {
-	condition := expression.AttributeExists(expression.Name(table.PrimaryKey.Name))
-	if table.RangeKey.Name != "" {
-		condition = condition.And(expression.AttributeExists(expression.Name(table.RangeKey.Name)))
-	}
-	return condition
-}

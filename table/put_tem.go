@@ -22,21 +22,6 @@ type PutItemConfig struct {
 	Encoder *serializer.Encoder
 }
 
-func putRequestPrepareConditionalCheck(
-	table *TableDefinition,
-	cfg *PutItemConfig,
-	upsert bool,
-) (cond expression.ConditionBuilder) {
-	if !upsert {
-		cond = expression.AttributeNotExists(expression.Name(table.PrimaryKey.Name))
-		if table.RangeKey.Name != "" {
-			cond = cond.And(expression.AttributeNotExists(expression.Name(table.RangeKey.Name)))
-		}
-		return cond
-	}
-	return cond
-}
-
 func preparePutItemRequest(
 	table *TableDefinition,
 	conditionalExpression expression.ConditionBuilder,
@@ -74,6 +59,7 @@ func preparePutItemRequest(
 	return request, nil
 }
 
+// shared code between PutItem and PutOrReplaceItem
 func putOrUpsertItem(
 	ctx context.Context,
 	client PutItemClient,
@@ -81,7 +67,7 @@ func putOrUpsertItem(
 	item any,
 	encoder *serializer.Encoder,
 	conditionalExpression expression.ConditionBuilder,
-	upsert bool,
+	allowReplaceItem bool,
 ) (err error) {
 	encodedItem, err := serializer.MarshalMap(encoder, item)
 	if err != nil {
@@ -104,8 +90,8 @@ func putOrUpsertItem(
 
 	_, err = client.PutItem(ctx, request)
 	if err != nil {
-		if !upsert {
-			//check if need to return item not exists.
+		if !allowReplaceItem {
+			//if item already exists ConditionalCheckFailedException will happen
 			if _, ok := ErrorAs[*types.ConditionalCheckFailedException](err); ok {
 				return &OperationError{
 					operation:   "delete item",
@@ -125,6 +111,17 @@ func putOrUpsertItem(
 		}
 	}
 	return nil
+}
+
+// --------------- put or replace item ----------------
+
+type PutOrReplaceOptions interface {
+	applyPutOrReplaceItemOption(*PutOrReplaceConfig)
+}
+
+type PutOrReplaceConfig struct {
+	Encoder          *serializer.Encoder
+	ConditionalCheck expression.ConditionBuilder
 }
 
 // put new item on the table
@@ -149,9 +146,43 @@ func PutItem(
 	if cfg.Encoder == nil {
 		cfg.Encoder = s_encoder
 	}
-	conditionExpression := expression.AttributeNotExists(expression.Name(table.PrimaryKey.Name))
-	if table.RangeKey.Name != "" {
-		conditionExpression = conditionExpression.And(expression.AttributeNotExists(expression.Name(table.RangeKey.Name)))
-	}
+
+	conditionExpression := ensureKeyNotExists(table)
 	return putOrUpsertItem(ctx, client, table, item, cfg.Encoder, conditionExpression, false)
+}
+
+// put item in given table
+// if item exists, replace it
+// / this function also allows passing custom conditional check from user that will check Exisitng item before replacemnt
+// that allows dynamoDB reject replacing of existing item(for example replacing existing item with item version check)
+func PutOrReplaceItem(
+	ctx context.Context,
+	client PutItemClient,
+	table *TableDefinition,
+	item any,
+	opts ...PutOrReplaceOptions,
+) (err error) {
+
+	cfg := &PutOrReplaceConfig{
+		Encoder: nil,
+	}
+	for _, opt := range opts {
+		opt.applyPutOrReplaceItemOption(cfg)
+	}
+	if cfg.Encoder == nil {
+		cfg.Encoder = client.GetEncoder()
+	}
+	if cfg.Encoder == nil {
+		cfg.Encoder = s_encoder
+	}
+
+	//in the case there is a conditional check assume its on existing item
+	if cfg.ConditionalCheck.IsSet() {
+		//item doesnt exists - dont fail the request - allow putting the item
+		conditionExpression := ensureKeyNotExists(table)
+		//OR the input conditional check
+		cfg.ConditionalCheck = conditionExpression.Or(cfg.ConditionalCheck)
+	}
+
+	return putOrUpsertItem(ctx, client, table, item, cfg.Encoder, cfg.ConditionalCheck, true)
 }
