@@ -56,9 +56,15 @@ func WithEncoder(encoder *serializer.Encoder) EncoderOption {
 
 var _ PutItemOptions = EncoderOption{}
 var _ BatchWriteItemOptions = EncoderOption{}
+var _ TransactionWriteItemOptions = EncoderOption{}
 
 type EncoderOption struct {
 	Encoder *serializer.Encoder
+}
+
+// applyTransactionWriteItemOption implements TransactionWriteItemOptions.
+func (e EncoderOption) applyTransactionWriteItemOption(cfg *TransactionWriteItemConfig) {
+	cfg.Encoder = e.Encoder
 }
 
 // applyBatchWriteItems implements BatchWriteItemOptions.
@@ -129,14 +135,9 @@ func WithConditionalCheck(cond expression.ConditionBuilder) ConditionalCheckOpti
 }
 
 var _ PutOrReplaceOptions = ConditionalCheckOption{}
-var _ UpdateOptions = ConditionalCheckOption{}
 
 type ConditionalCheckOption struct {
 	ConditionExpression expression.ConditionBuilder
-}
-
-func (o ConditionalCheckOption) applyUpdateOption(cfg *UpdateConfig) {
-	cfg.ConditionalCheck = o.ConditionExpression
 }
 
 func (o ConditionalCheckOption) applyPutOrReplaceItemOption(cfg *PutOrReplaceConfig) {

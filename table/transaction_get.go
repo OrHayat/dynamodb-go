@@ -26,7 +26,7 @@ type TransactionGetRequet struct {
 	Table              *TableDefinition
 	Key                Key
 	Projection         *expression.ProjectionBuilder
-	Out                any //result pointer
+	Out                any // result pointer
 	AllowItemNotExists bool
 }
 
