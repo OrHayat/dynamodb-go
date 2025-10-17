@@ -17,8 +17,11 @@ type TransactionWriteItemClient interface {
 }
 
 type TransactionWriteItemRequest struct {
-	Table  *TableDefinition
-	Checks []TransactionCheckRequest
+	Table   *TableDefinition
+	Checks  []TransactionCheckRequest
+	Updates []TransactionUpdateRequest
+	Puts    []TransactionPutRequest
+	Deletes []TransactionDeleteRequest
 }
 
 type TransactionCheckRequest struct {
@@ -103,7 +106,6 @@ func prepareTransactionPutRequest(table *TableDefinition, encoder *serializer.En
 type TransactionDeleteRequest struct {
 	Key      Key
 	Condtion expression.ConditionBuilder //optional - item assumed to exists if this is passed
-	// AllowReplaceExisitng bool
 }
 
 // TODO: return deleteItemNotExistsCheckMode - and ensure main loop handle it with errors.As
@@ -167,12 +169,6 @@ func prepareTransactionUpdateRequest(
 	}, nil
 }
 
-// type WriteRequest struct {
-// 	Table       *TableDefinition
-// 	DeleteItems []DeleteRequest
-// 	PutRequests []PutRequest
-// }
-
 type TransactionWriteItemOptions interface {
 	applyTransactionWriteItemOption(cfg *TransactionWriteItemConfig)
 }
@@ -181,51 +177,70 @@ type TransactionWriteItemConfig struct {
 	Encoder *serializer.Encoder
 }
 
-func prepareWriteTransactionRequest() (*dynamodb.TransactWriteItemsInput, error) {
-	request := &dynamodb.TransactWriteItemsInput{
-		TransactItems: []types.TransactWriteItem{
-			{
-				// Put: &types.Put{
-				// 	Item:                      nil,
-				// 	TableName:                 nil,
-				// 	ConditionExpression:       nil,
-				// 	ExpressionAttributeNames:  nil,
-				// 	ExpressionAttributeValues: nil,
-				// },
-				Delete: &types.Delete{
-					Key:                       nil,
-					TableName:                 nil,
-					ConditionExpression:       nil,
-					ExpressionAttributeNames:  nil,
-					ExpressionAttributeValues: nil,
+func prepareWriteTransactionRequest(writeRequests []TransactionWriteItemRequest) (request *dynamodb.TransactWriteItemsInput, err error) {
+	var txRequests []types.TransactWriteItem
+	for _, writeReq := range writeRequests {
+		for _, checkReq := range writeReq.Checks {
+			conditionCheck, err := prepareTransactionCheckRequest(writeReq.Table, checkReq)
+			if err != nil {
+				return nil, err
+			}
+			txRequests = append(txRequests,
+				types.TransactWriteItem{
+					ConditionCheck: conditionCheck,
 				},
-				Update: &types.Update{
-					Key:                                 nil,
-					TableName:                           nil,
-					UpdateExpression:                    nil,
-					ConditionExpression:                 nil,
-					ExpressionAttributeNames:            nil,
-					ExpressionAttributeValues:           nil,
-					ReturnValuesOnConditionCheckFailure: "",
+			)
+		}
+		for _, updateReq := range writeReq.Updates {
+			update, err := prepareTransactionUpdateRequest(writeReq.Table, updateReq, nil)
+			if err != nil {
+				return nil, err
+			}
+			txRequests = append(txRequests,
+				types.TransactWriteItem{
+					Update: update,
 				},
-				// ConditionCheck: &types.ConditionCheck{
-				// 	Key:                                 nil,
-				// 	TableName:                           nil,
-				// 	ConditionExpression:                 nil,
-				// 	ExpressionAttributeNames:            nil,
-				// 	ExpressionAttributeValues:           nil,
-				// 	ReturnValuesOnConditionCheckFailure: "",
-				// },
-			},
-		},
+			)
+		}
+		for _, putReq := range writeReq.Puts {
+			put, err := prepareTransactionPutRequest(writeReq.Table, nil, putReq)
+			if err != nil {
+				return nil, err
+			}
+			txRequests = append(txRequests,
+				types.TransactWriteItem{
+					Put: put,
+				},
+			)
+		}
+		for _, deleteReq := range writeReq.Deletes {
+			del, err := prepareTransactionDeleteRequest(writeReq.Table, deleteReq)
+			if err != nil {
+				return nil, err
+			}
+			txRequests = append(txRequests,
+				types.TransactWriteItem{
+					Delete: del,
+				},
+			)
+		}
 	}
-	return request, nil
+	return &dynamodb.TransactWriteItemsInput{
+		TransactItems: txRequests,
+	}, nil
 }
 func TransactionWriteItems(
 	ctx context.Context,
 	client TransactionWriteItemClient,
 	writeRequests []TransactionWriteItemRequest,
 	opts ...TransactionWriteItemOptions) (err error) {
-	prepareWriteTransactionRequest()
+	request, err := prepareWriteTransactionRequest(writeRequests)
+	if err != nil {
+		return err
+	}
+	_, err = client.TransactWriteItems(ctx, request)
+	if err != nil {
+		return err
+	}
 	return nil
 }
