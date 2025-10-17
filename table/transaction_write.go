@@ -59,7 +59,7 @@ type TransactionPutRequest struct {
 	AllowReplaceExisitng bool
 }
 
-func prepareTransactionPutRequest(table *TableDefinition, encoder *serializer.Encoder, request TransactionPutRequest) (*types.Put, error) {
+func prepareTransactionPutRequest(table *TableDefinition, request TransactionPutRequest, encoder *serializer.Encoder) (*types.Put, error) {
 
 	encodedItem, err := serializer.MarshalMap(encoder, request.Item)
 	if err != nil {
@@ -174,10 +174,12 @@ type TransactionWriteItemOptions interface {
 }
 
 type TransactionWriteItemConfig struct {
-	Encoder *serializer.Encoder
 }
 
-func prepareWriteTransactionRequest(writeRequests []TransactionWriteItemRequest) (request *dynamodb.TransactWriteItemsInput, err error) {
+func prepareWriteTransactionRequest(
+	writeRequests []TransactionWriteItemRequest,
+	encoder *serializer.Encoder,
+) (request *dynamodb.TransactWriteItemsInput, err error) {
 	var txRequests []types.TransactWriteItem
 	for _, writeReq := range writeRequests {
 		for _, checkReq := range writeReq.Checks {
@@ -192,7 +194,7 @@ func prepareWriteTransactionRequest(writeRequests []TransactionWriteItemRequest)
 			)
 		}
 		for _, updateReq := range writeReq.Updates {
-			update, err := prepareTransactionUpdateRequest(writeReq.Table, updateReq, nil)
+			update, err := prepareTransactionUpdateRequest(writeReq.Table, updateReq, encoder)
 			if err != nil {
 				return nil, err
 			}
@@ -203,7 +205,7 @@ func prepareWriteTransactionRequest(writeRequests []TransactionWriteItemRequest)
 			)
 		}
 		for _, putReq := range writeReq.Puts {
-			put, err := prepareTransactionPutRequest(writeReq.Table, nil, putReq)
+			put, err := prepareTransactionPutRequest(writeReq.Table, putReq, encoder)
 			if err != nil {
 				return nil, err
 			}
@@ -234,7 +236,12 @@ func TransactionWriteItems(
 	client TransactionWriteItemClient,
 	writeRequests []TransactionWriteItemRequest,
 	opts ...TransactionWriteItemOptions) (err error) {
-	request, err := prepareWriteTransactionRequest(writeRequests)
+
+	encoder := client.GetEncoder()
+	if encoder == nil {
+		encoder = s_encoder
+	}
+	request, err := prepareWriteTransactionRequest(writeRequests, encoder)
 	if err != nil {
 		return err
 	}

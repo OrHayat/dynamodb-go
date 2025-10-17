@@ -21,7 +21,6 @@ type BatchWriteItemOptions interface {
 }
 
 type BatchWriteItemConfig struct {
-	Encoder *serializer.Encoder
 }
 
 func batchPutRequestPrepareDeleteItems(request WriteRequest) ([]types.WriteRequest, error) {
@@ -132,14 +131,13 @@ func BatchWriteItems(
 	for _, opt := range opts {
 		opt.applyBatchWriteItems(&cfg)
 	}
-	if cfg.Encoder == nil {
-		cfg.Encoder = client.GetEncoder()
-	}
-	if cfg.Encoder == nil {
-		cfg.Encoder = s_encoder
+
+	encoder := client.GetEncoder()
+	if encoder == nil {
+		encoder = s_encoder
 	}
 
-	request, err := prepareBatchWriteItemsRequest(requests, cfg.Encoder)
+	request, err := prepareBatchWriteItemsRequest(requests, encoder)
 	if err != nil {
 		return err
 	}

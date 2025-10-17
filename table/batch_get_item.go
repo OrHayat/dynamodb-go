@@ -21,11 +21,9 @@ type BatchGetItemOptions interface {
 }
 
 type BatchGetItemConfig struct {
-	Decoder *serializer.Decoder
 }
 
 func prepareBatchGetItemRequestSingleTable(
-	cfg *BatchGetItemConfig,
 	table *TableDefinition,
 	input BatchGetSingleTableInput,
 
@@ -83,19 +81,11 @@ func BatchGetItemSingleTable(
 	out any,
 	options ...BatchGetItemOptions,
 ) error {
-	cfg := BatchGetItemConfig{
-		Decoder: nil,
+	decoder := client.GetDecoder()
+	if decoder == nil {
+		decoder = s_decoder
 	}
-	for _, opt := range options {
-		opt.applyBatchGetItemOption(&cfg)
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = client.GetDecoder()
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = s_decoder
-	}
-	request, err := prepareBatchGetItemRequestSingleTable(&cfg, table, input)
+	request, err := prepareBatchGetItemRequestSingleTable(table, input)
 	if err != nil {
 		return err
 	}
@@ -121,7 +111,7 @@ func BatchGetItemSingleTable(
 		}
 		attempt++
 	}
-	err = serializer.UnmarshalListOfMaps(cfg.Decoder, res, out)
+	err = serializer.UnmarshalListOfMaps(decoder, res, out)
 	if err != nil {
 		return &OperationError{
 			operation:   "batch get item unmarshal",

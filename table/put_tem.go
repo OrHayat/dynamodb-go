@@ -21,7 +21,6 @@ type PutItemOptions interface {
 }
 
 type PutItemConfig struct {
-	Encoder *serializer.Encoder
 }
 
 func getPutItemExpression(
@@ -135,29 +134,24 @@ func PutItem(
 	input PutItemInput,
 	opts ...PutItemOptions,
 ) (err error) {
+
 	if input.AllowReplaceItem == aws.UnknownTernary {
 		input.AllowReplaceItem = aws.FalseTernary
 	}
 	if input.ConditionalCheck.IsSet() && !input.AllowReplaceItem.Bool() {
 		return &OperationError{
 			table:       table,
-			internalErr: errors.New("invalid put item options: replace item is not true and conditionalCheck is not empty"),
+			internalErr: errors.New("invalid put item options: conditional check can be used only when AllowReplaceItem is true"),
 		}
 	}
-	cfg := &PutItemConfig{
-		Encoder: nil,
+
+	encoder := client.GetEncoder()
+	if encoder == nil {
+		encoder = s_encoder
 	}
-	for _, opt := range opts {
-		opt.applyPutItemOption(cfg)
-	}
-	if cfg.Encoder == nil {
-		cfg.Encoder = client.GetEncoder()
-	}
-	if cfg.Encoder == nil {
-		cfg.Encoder = s_encoder
-	}
+
 	if !input.AllowReplaceItem.Bool() {
 		input.ConditionalCheck = ensureKeyNotExists(table)
 	}
-	return putOrReplaceItem(ctx, client, table, input, cfg.Encoder)
+	return putOrReplaceItem(ctx, client, table, input, encoder)
 }

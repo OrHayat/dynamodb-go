@@ -39,7 +39,6 @@ type QueryOptions interface {
 }
 
 type QueryConfig struct {
-	Decoder *serializer.Decoder
 }
 
 // Validate consistent read usage with GSI
@@ -106,7 +105,6 @@ func prepareKeyConditionForQuery(table *TableDefinition, input QueryInput) (cond
 func prepareQueryRequest(
 	table *TableDefinition,
 	input QueryInput,
-	cfg QueryConfig,
 ) (*dynamodb.QueryInput, error) {
 
 	keyCond, err := prepareKeyConditionForQuery(table, input) // indexName, key, cfg)
@@ -191,20 +189,12 @@ func Query(
 	out any,
 	opts ...QueryOptions,
 ) (nextPage PaginationKey, err error) {
-	cfg := QueryConfig{
-		Decoder: nil,
-	}
-	for _, opt := range opts {
-		opt.applyQueryOption(&cfg)
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = client.GetDecoder()
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = s_decoder
-	}
 
-	request, err := prepareQueryRequest(table, input, cfg)
+	decoder := client.GetDecoder()
+	if decoder == nil {
+		decoder = s_decoder
+	}
+	request, err := prepareQueryRequest(table, input)
 	if err != nil {
 		return nextPage, err
 	}
@@ -219,7 +209,7 @@ func Query(
 		}
 	}
 
-	err = serializer.UnmarshalListOfMaps(cfg.Decoder, response.Items, out)
+	err = serializer.UnmarshalListOfMaps(decoder, response.Items, out)
 	if err != nil {
 		return nextPage, &OperationError{
 			operation:   "query decode",

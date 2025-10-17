@@ -19,7 +19,6 @@ type ScanOptions interface {
 }
 
 type ScanConfig struct {
-	Decoder *serializer.Decoder
 }
 
 func prepareScanExpression(scanInput ScanInput) (expr expression.Expression, err error) {
@@ -40,7 +39,6 @@ func prepareScanExpression(scanInput ScanInput) (expr expression.Expression, err
 }
 
 func prepareScanRequest(
-	cfg ScanConfig,
 	table *TableDefinition,
 	input ScanInput,
 ) (*dynamodb.ScanInput, error) {
@@ -103,17 +101,13 @@ func Scan(
 	out any,
 	opts ...ScanOptions,
 ) (nextPage PaginationKey, err error) {
-	cfg := ScanConfig{}
-	for _, o := range opts {
-		o.applyScanOption(&cfg)
+
+	decoder := client.GetDecoder()
+	if decoder == nil {
+		decoder = s_decoder
 	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = client.GetDecoder()
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = s_decoder
-	}
-	scanRequest, err := prepareScanRequest(cfg, table, input)
+
+	scanRequest, err := prepareScanRequest(table, input)
 	if err != nil {
 		return nextPage, err
 	}
@@ -129,7 +123,7 @@ func Scan(
 		encodedKey: response.LastEvaluatedKey,
 	}
 
-	err = serializer.UnmarshalListOfMaps(cfg.Decoder, response.Items, out)
+	err = serializer.UnmarshalListOfMaps(decoder, response.Items, out)
 	if err != nil {
 		return nextPage, &OperationError{
 			operation:   "scan unmarshal",

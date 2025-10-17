@@ -19,7 +19,6 @@ type TransactionGetItemOptions interface {
 }
 
 type TransactionGetItemConfig struct {
-	Decoder *serializer.Decoder
 }
 
 type TransactionGetRequet struct {
@@ -65,16 +64,10 @@ func TransactionGetItem(
 	getRequests []TransactionGetRequet,
 	opts ...TransactionGetItemOptions,
 ) (err error) {
-	cfg := TransactionGetItemConfig{}
 
-	for _, opt := range opts {
-		opt.applyTransactionGetItemOption(&cfg)
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = client.GetDecoder()
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = s_decoder
+	decoder := client.GetDecoder()
+	if decoder == nil {
+		decoder = s_decoder
 	}
 	request, err := prepareGetTransactionRequest(getRequests)
 	if err != nil {
@@ -101,7 +94,7 @@ func TransactionGetItem(
 			}
 		}
 
-		err = serializer.UnmarshalMap(cfg.Decoder, resp.Item, &getRequests[i].Out)
+		err = serializer.UnmarshalMap(decoder, resp.Item, &getRequests[i].Out)
 		if err != nil {
 			return &OperationError{
 				operation:   "transaction get item unmarshal",

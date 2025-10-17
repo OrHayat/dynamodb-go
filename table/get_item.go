@@ -16,13 +16,7 @@ type GetItemClient interface {
 	GetDecoder() *serializer.Decoder //mil imply to use default decoder
 }
 
-type ProjectionBuilder struct {
-	projectionBuilder expression.ProjectionBuilder
-	projectionEnabled bool //marker to know if projection was set by user or not
-}
-
 type GetItemConfig struct {
-	Decoder *serializer.Decoder
 }
 
 type GetItemOptions interface {
@@ -75,18 +69,12 @@ func GetItem(
 	out any,
 	opts ...GetItemOptions,
 ) (err error) {
-	cfg := GetItemConfig{
-		Decoder: nil,
+
+	decoder := client.GetDecoder()
+	if decoder == nil {
+		decoder = s_decoder
 	}
-	for _, o := range opts {
-		o.applyGetItemOption(&cfg)
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = client.GetDecoder()
-	}
-	if cfg.Decoder == nil {
-		cfg.Decoder = s_decoder
-	}
+
 	encodedKey, err := table.getKey(input.Key)
 	if err != nil {
 		return &OperationError{
@@ -129,7 +117,7 @@ func GetItem(
 		}
 	}
 
-	err = serializer.UnmarshalMap(cfg.Decoder, res.Item, out)
+	err = serializer.UnmarshalMap(decoder, res.Item, out)
 	if err != nil {
 		return &OperationError{
 			operation:   "get item unmarshal",
