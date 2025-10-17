@@ -93,7 +93,7 @@ func prepareUpdateExpression(
 func prepareUpdateRequest(
 	table *TableDefinition,
 	key Key,
-	update ItemUpdate,
+	update UpdateItemInput,
 	cfg UpdateConfig,
 	checkItemExists bool,
 ) (*dynamodb.UpdateItemInput, error) {
@@ -128,7 +128,7 @@ func prepareUpdateRequest(
 	return request, nil
 }
 
-type ItemUpdate struct {
+type UpdateItemInput struct {
 	//must be either struct or map[string]any
 	UpdateFields any
 	//if this is true - update will do upsert operation
@@ -152,7 +152,7 @@ func createOrUpdateItemInternal(
 	client UpdateItemsClient,
 	table *TableDefinition,
 	key Key,
-	update ItemUpdate,
+	update UpdateItemInput,
 	checkItemExists bool,
 	opts ...UpdateOptions,
 ) (err error) {
@@ -191,10 +191,10 @@ func createOrUpdateItemInternal(
 	}
 	return nil
 }
-func UpdateItem(ctx context.Context, client UpdateItemsClient, table *TableDefinition, key Key, update ItemUpdate, opts ...UpdateOptions) (err error) {
+func UpdateItem(ctx context.Context, client UpdateItemsClient, table *TableDefinition, key Key, update UpdateItemInput, opts ...UpdateOptions) (err error) {
 	return createOrUpdateItemInternal(ctx, client, table, key, update, true, opts...)
 }
 
-func UpsertItem(ctx context.Context, client UpdateItemsClient, table *TableDefinition, key Key, update ItemUpdate, opts ...UpdateOptions) (err error) {
+func UpsertItem(ctx context.Context, client UpdateItemsClient, table *TableDefinition, key Key, update UpdateItemInput, opts ...UpdateOptions) (err error) {
 	return createOrUpdateItemInternal(ctx, client, table, key, update, false, opts...)
 }

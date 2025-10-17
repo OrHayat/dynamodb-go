@@ -97,7 +97,7 @@ type TableDefinition struct {
 	RangeKey   AttributeDefinition
 	GSI        []GlobalSecondaryIndex
 	LSI        []LocalSecondaryIndex
-	Billing
+	Billing    Billing
 }
 
 func (d *TableDefinition) getPkName(index string) (string, error) {

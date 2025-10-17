@@ -37,24 +37,17 @@ func prepareGetTransactionRequest(getRequests []TransactionGetRequet) (*dynamodb
 		if err != nil {
 			return nil, err
 		}
-		var proejction *string
-		var names map[string]string
-		if req.Projection != nil {
-			b := expression.NewBuilder().WithProjection(*req.Projection)
-			expr, err := b.Build()
-			if err != nil {
-				return nil, err
-			}
-			proejction = expr.Projection()
-			names = expr.Names()
+		expr, err := prepareGetExpression(req.Projection)
+		if err != nil {
+			return nil, err
 		}
 
 		txRequests[i] = types.TransactGetItem{
 			Get: &types.Get{
 				Key:                      encodedKey,
 				TableName:                aws.String(req.Table.Name),
-				ProjectionExpression:     proejction,
-				ExpressionAttributeNames: names,
+				ProjectionExpression:     expr.Projection(),
+				ExpressionAttributeNames: expr.Names(),
 			},
 		}
 	}
@@ -94,7 +87,6 @@ func TransactionGetItem(
 	}
 
 	for i, resp := range response.Responses {
-		//item not found
 		if resp.Item == nil {
 			//if the request allows item not exists - continue - no error getRequests[i].Out will be nil
 			if getRequests[i].AllowItemNotExists {

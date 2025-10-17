@@ -2,7 +2,9 @@ package table
 
 import (
 	"context"
+	"errors"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -22,35 +24,33 @@ type PutItemConfig struct {
 	Encoder *serializer.Encoder
 }
 
+func getPutItemExpression(
+	conditionalExpression expression.ConditionBuilder,
+) (expr expression.Expression, err error) {
+	if !conditionalExpression.IsSet() {
+		return
+	}
+	b := expression.NewBuilder()
+	b = b.WithCondition(conditionalExpression)
+	return b.Build()
+}
+
 func preparePutItemRequest(
 	table *TableDefinition,
 	conditionalExpression expression.ConditionBuilder,
 	encodedItem map[string]types.AttributeValue,
 ) (*dynamodb.PutItemInput, error) {
 
-	var names map[string]string
-	var values map[string]types.AttributeValue
-	var condition *string
-
-	if conditionalExpression.IsSet() {
-		b := expression.NewBuilder()
-		b = b.WithCondition(conditionalExpression)
-		var err error
-		expr, err := b.Build()
-		if err != nil {
-			return nil, err
-		}
-		names = expr.Names()
-		values = expr.Values()
-		condition = expr.Condition()
+	expr, err := getPutItemExpression(conditionalExpression)
+	if err != nil {
+		return nil, err
 	}
-
 	request := &dynamodb.PutItemInput{
 		TableName:                           &table.Name,
 		Item:                                encodedItem,
-		ConditionExpression:                 condition,
-		ExpressionAttributeNames:            names,
-		ExpressionAttributeValues:           values,
+		ConditionExpression:                 expr.Condition(),
+		ExpressionAttributeNames:            expr.Names(),
+		ExpressionAttributeValues:           expr.Values(),
 		ReturnConsumedCapacity:              "", //TODO: add way to return consumed capacity
 		ReturnItemCollectionMetrics:         "", //TODO: add way to return item collection metrics
 		ReturnValues:                        "",
@@ -59,17 +59,18 @@ func preparePutItemRequest(
 	return request, nil
 }
 
-// shared code between PutItem and PutOrReplaceItem
-func putOrUpsertItem(
+// execute put item request request
+//
+// if inputinput.AllowReplaceItem is false - ensure item not exists condition will be added to the request
+func putOrReplaceItem(
 	ctx context.Context,
 	client PutItemClient,
 	table *TableDefinition,
-	item any,
+	input PutItemInput,
 	encoder *serializer.Encoder,
-	conditionalExpression expression.ConditionBuilder,
-	allowReplaceItem bool,
 ) (err error) {
-	encodedItem, err := serializer.MarshalMap(encoder, item)
+
+	encodedItem, err := serializer.MarshalMap(encoder, input.Item)
 	if err != nil {
 		return err
 	}
@@ -83,18 +84,18 @@ func putOrUpsertItem(
 			sk:          table.encodedKeyToVal(sk),
 		}
 	}
-	request, err := preparePutItemRequest(table, conditionalExpression, encodedItem)
+
+	request, err := preparePutItemRequest(table, input.ConditionalCheck, encodedItem)
 	if err != nil {
 		return err
 	}
 
 	_, err = client.PutItem(ctx, request)
 	if err != nil {
-		if !allowReplaceItem {
-			//if item already exists ConditionalCheckFailedException will happen
+		if !input.AllowReplaceItem.Bool() {
 			if _, ok := ErrorAs[*types.ConditionalCheckFailedException](err); ok {
 				return &OperationError{
-					operation:   "delete item",
+					operation:   "put item",
 					table:       table,
 					pk:          table.encodedKeyToVal(pk),
 					sk:          table.encodedKeyToVal(sk),
@@ -115,25 +116,34 @@ func putOrUpsertItem(
 
 // --------------- put or replace item ----------------
 
-type PutOrReplaceOptions interface {
-	applyPutOrReplaceItemOption(*PutOrReplaceConfig)
-}
-
-type PutOrReplaceConfig struct {
-	Encoder          *serializer.Encoder
+type PutItemInput struct {
+	//item to put in the database
+	Item any
+	//if this is true - replace item is allowed
+	//otherwise item not exists check will be added to the query
+	AllowReplaceItem aws.Ternary
+	//additional conditions that can be used to limit the replacement item operation
+	//
+	//this option requires AllowReplaceItem to be true
 	ConditionalCheck expression.ConditionBuilder
 }
 
-// put new item on the table
-// if item already exists function will fail
-// to allow replacing of existing use UpsertItem function
 func PutItem(
 	ctx context.Context,
 	client PutItemClient,
 	table *TableDefinition,
-	item any,
+	input PutItemInput,
 	opts ...PutItemOptions,
 ) (err error) {
+	if input.AllowReplaceItem == aws.UnknownTernary {
+		input.AllowReplaceItem = aws.FalseTernary
+	}
+	if input.ConditionalCheck.IsSet() && !input.AllowReplaceItem.Bool() {
+		return &OperationError{
+			table:       table,
+			internalErr: errors.New("invalid put item options: replace item is not true and conditionalCheck is not empty"),
+		}
+	}
 	cfg := &PutItemConfig{
 		Encoder: nil,
 	}
@@ -146,43 +156,8 @@ func PutItem(
 	if cfg.Encoder == nil {
 		cfg.Encoder = s_encoder
 	}
-
-	conditionExpression := ensureKeyNotExists(table)
-	return putOrUpsertItem(ctx, client, table, item, cfg.Encoder, conditionExpression, false)
-}
-
-// put item in given table
-// if item exists, replace it
-// / this function also allows passing custom conditional check from user that will check Exisitng item before replacemnt
-// that allows dynamoDB reject replacing of existing item(for example replacing existing item with item version check)
-func PutOrReplaceItem(
-	ctx context.Context,
-	client PutItemClient,
-	table *TableDefinition,
-	item any,
-	opts ...PutOrReplaceOptions,
-) (err error) {
-
-	cfg := &PutOrReplaceConfig{
-		Encoder: nil,
+	if !input.AllowReplaceItem.Bool() {
+		input.ConditionalCheck = ensureKeyNotExists(table)
 	}
-	for _, opt := range opts {
-		opt.applyPutOrReplaceItemOption(cfg)
-	}
-	if cfg.Encoder == nil {
-		cfg.Encoder = client.GetEncoder()
-	}
-	if cfg.Encoder == nil {
-		cfg.Encoder = s_encoder
-	}
-
-	//in the case there is a conditional check assume its on existing item
-	if cfg.ConditionalCheck.IsSet() {
-		//item doesnt exists - dont fail the request - allow putting the item
-		conditionExpression := ensureKeyNotExists(table)
-		//OR the input conditional check
-		cfg.ConditionalCheck = conditionExpression.Or(cfg.ConditionalCheck)
-	}
-
-	return putOrUpsertItem(ctx, client, table, item, cfg.Encoder, cfg.ConditionalCheck, true)
+	return putOrReplaceItem(ctx, client, table, input, cfg.Encoder)
 }

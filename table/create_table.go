@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
@@ -37,27 +38,49 @@ func prepareCreateTableRequest(table *TableDefinition) (*dynamodb.CreateTableInp
 			KeyType:       types.KeyTypeRange,
 		})
 	}
-	var billingMode types.BillingMode
-	if table.BillingMode == "" {
-		billingMode = types.BillingModePayPerRequest
-		table.BillingMode = billingMode
+	var billingMode types.BillingMode = types.BillingModePayPerRequest
+	var requestGSI []types.GlobalSecondaryIndex
+	for _, gsi := range table.GSI {
+		curr := types.GlobalSecondaryIndex{
+			IndexName: aws.String(gsi.IndexName),
+			KeySchema: []types.KeySchemaElement{},
+		}
+		curr.KeySchema = append(curr.KeySchema, types.KeySchemaElement{
+			AttributeName: aws.String(gsi.PrimaryKey.Name),
+			KeyType:       types.KeyTypeHash,
+		})
+		if gsi.RangeKey.Name != "" {
+			curr.KeySchema = append(curr.KeySchema, types.KeySchemaElement{
+				AttributeName: aws.String(gsi.RangeKey.Name),
+				KeyType:       types.KeyTypeRange,
+			})
+		}
+		requestGSI = append(requestGSI, curr)
 	}
 
-	if table.BillingMode != types.BillingModeProvisioned && table.ProvisionedThroughput != nil {
-		return nil, fmt.Errorf("ProvisionedThroughput must be nil when BillingMode is not PROVISIONED")
+	var requestLSI []types.LocalSecondaryIndex
+	for _, lsi := range table.LSI {
+		curr := types.LocalSecondaryIndex{
+			IndexName: aws.String(lsi.IndexName),
+			KeySchema: []types.KeySchemaElement{},
+		}
+		if lsi.RangeKey.Name == "" {
+			return nil, fmt.Errorf("LSI must have range key")
+		}
+		curr.KeySchema = append(curr.KeySchema, types.KeySchemaElement{
+			AttributeName: aws.String(lsi.RangeKey.Name),
+			KeyType:       types.KeyTypeRange,
+		})
+		requestLSI = append(requestLSI, curr)
 	}
-	if table.BillingMode != types.BillingModePayPerRequest && table.OnDemandThroughput != nil {
-		return nil, fmt.Errorf("OnDemandThroughput must be nil when BillingMode is not PAY_PER_REQUEST")
-	}
+
 	input := &dynamodb.CreateTableInput{
 		TableName:              &table.Name,
 		AttributeDefinitions:   attributes,
 		BillingMode:            billingMode,
-		ProvisionedThroughput:  table.ProvisionedThroughput,
-		OnDemandThroughput:     table.OnDemandThroughput,
 		KeySchema:              keySchema,
-		GlobalSecondaryIndexes: nil,
-		LocalSecondaryIndexes:  nil,
+		GlobalSecondaryIndexes: requestGSI,
+		LocalSecondaryIndexes:  requestLSI,
 	}
 
 	return input, nil

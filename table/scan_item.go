@@ -6,7 +6,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/orhayat/dynamodb-go/serializer"
 )
 
@@ -20,64 +19,65 @@ type ScanOptions interface {
 }
 
 type ScanConfig struct {
-	ConsistentRead   bool
-	Decoder          *serializer.Decoder
-	FilterExpression expression.ConditionBuilder
-	Limit            *int32
+	Decoder *serializer.Decoder
+}
+
+func prepareScanExpression(scanInput ScanInput) (expr expression.Expression, err error) {
+	b := expression.NewBuilder()
+	needBuild := false
+	if scanInput.FilterExpression.IsSet() {
+		needBuild = true
+		b = b.WithFilter(scanInput.FilterExpression)
+	}
+	if scanInput.ProjectionExpression != nil {
+		needBuild = true
+		b = b.WithProjection(*scanInput.ProjectionExpression)
+	}
+	if !needBuild {
+		return
+	}
+	return b.Build()
 }
 
 func prepareScanRequest(
 	cfg ScanConfig,
 	table *TableDefinition,
-	indexName string,
-	paginationKey PaginationKey,
-
+	input ScanInput,
 ) (*dynamodb.ScanInput, error) {
 
-	startScanFrom, err := paginationKey.resolveExclusiveStartKey(table, indexName)
+	startScanFrom, err := input.paginationKey.resolveExclusiveStartKey(table, input.Index)
 	if err != nil {
 		return nil, &OperationError{
 			operation:   "scan prepare",
 			table:       table,
-			index:       indexName,
+			index:       input.Index,
 			internalErr: err,
 		}
 	}
-	var needBuildExpression bool = false
-	b := expression.NewBuilder()
-	if cfg.FilterExpression.IsSet() {
-		needBuildExpression = true
-		b = b.WithFilter(cfg.FilterExpression)
-	}
 
-	var expressionAttributeNames map[string]string
-	var expressionAttributeValues map[string]types.AttributeValue
-	var filterExpression *string
-
-	if needBuildExpression {
-		expr, err := b.Build()
-		if err != nil {
-			return nil, &OperationError{
-				operation:   "scan prepare build filter expression",
-				table:       table,
-				index:       indexName,
-				internalErr: err,
-			}
+	expr, err := prepareScanExpression(input)
+	if err != nil {
+		return nil, &OperationError{
+			operation:   "scan prepare",
+			table:       table,
+			index:       input.Index,
+			internalErr: err,
 		}
-		expressionAttributeNames = expr.Names()
-		expressionAttributeValues = expr.Values()
-		filterExpression = expr.Filter()
 	}
 
+	var limit *int32
+	if input.Limit > 0 {
+		limit = aws.Int32(input.Limit)
+	}
 	res := &dynamodb.ScanInput{
 		TableName:                 aws.String(table.Name),
-		Limit:                     cfg.Limit,
-		ConsistentRead:            aws.Bool(cfg.ConsistentRead),
+		Limit:                     limit,
+		ConsistentRead:            aws.Bool(input.ConsistentRead.Bool()),
 		ExclusiveStartKey:         startScanFrom,
-		ProjectionExpression:      nil, //TODO: add way to support projection expression
-		ExpressionAttributeNames:  expressionAttributeNames,
-		ExpressionAttributeValues: expressionAttributeValues,
-		FilterExpression:          filterExpression,
+		ProjectionExpression:      expr.Projection(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+		FilterExpression:          expr.Filter(),
 		Select:                    "",  //TODO: add way to limit attributes returned - if query index fetch only part of the record or if projection expression is used
 		Segment:                   nil, //TODO: add way to parallelize scan - note paginator need to know about segment id
 		TotalSegments:             nil, //TODO: add way to parallelize scan
@@ -86,18 +86,24 @@ func prepareScanRequest(
 	return res, nil
 }
 
+type ScanInput struct {
+	Index                string        //pass empty string to scan main table
+	paginationKey        PaginationKey //pass empty struct to start from beginning of table/index
+	ConsistentRead       aws.Ternary
+	FilterExpression     expression.ConditionBuilder
+	ProjectionExpression *expression.ProjectionBuilder
+	Limit                int32
+}
+
 func Scan(
 	ctx context.Context,
 	client ScanAPIClient,
 	table *TableDefinition,
-	index string, //pass empty string to scan main table
-	paginationKey PaginationKey, //pass empty struct to start from beginning of table/index
+	input ScanInput,
 	out any,
 	opts ...ScanOptions,
 ) (nextPage PaginationKey, err error) {
-	cfg := ScanConfig{
-		ConsistentRead: false,
-	}
+	cfg := ScanConfig{}
 	for _, o := range opts {
 		o.applyScanOption(&cfg)
 	}
@@ -107,11 +113,11 @@ func Scan(
 	if cfg.Decoder == nil {
 		cfg.Decoder = s_decoder
 	}
-	input, err := prepareScanRequest(cfg, table, index, paginationKey)
+	scanRequest, err := prepareScanRequest(cfg, table, input)
 	if err != nil {
 		return nextPage, err
 	}
-	response, err := client.Scan(ctx, input)
+	response, err := client.Scan(ctx, scanRequest)
 	if err != nil {
 		return nextPage, &OperationError{
 			operation:   "scan",
@@ -139,10 +145,9 @@ func ScanOf[T any](
 	ctx context.Context,
 	client ScanAPIClient,
 	table *TableDefinition,
-	index string, //pass empty string to scan main table
-	paginationKey PaginationKey, //pass empty struct to start from beginning of table/index
+	input ScanInput,
 	opts ...ScanOptions,
 ) (page []T, nextPage PaginationKey, err error) {
-	nextPage, err = Scan(ctx, client, table, index, paginationKey, &page, opts...)
+	nextPage, err = Scan(ctx, client, table, input, &page, opts...)
 	return page, nextPage, err
 }

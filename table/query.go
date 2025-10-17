@@ -10,6 +10,25 @@ import (
 	"github.com/orhayat/dynamodb-go/serializer"
 )
 
+type ScanKeysOrder int
+
+const (
+	ScanKeysOrderUndefined ScanKeysOrder = iota
+	ScanKeysOrderAscending
+	ScanKeysOrderDescending
+)
+
+func (ord ScanKeysOrder) getScanOrder() *bool {
+	var scanOrder *bool
+	switch ord {
+	case ScanKeysOrderDescending:
+		scanOrder = aws.Bool(false)
+	default:
+		scanOrder = aws.Bool(true)
+	}
+	return scanOrder
+}
+
 type QueryItemsClient interface {
 	Query(context.Context, *dynamodb.QueryInput, ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	GetDecoder() *serializer.Decoder
@@ -20,24 +39,7 @@ type QueryOptions interface {
 }
 
 type QueryConfig struct {
-	ConsistentRead   bool
-	Decoder          *serializer.Decoder
-	Limit            *int32
-	FilterExpression expression.ConditionBuilder
-	ScanKeysOrder    ScanKeysOrder
-	SortKeyCondition expression.KeyConditionBuilder
-}
-
-// translate ScanKeysOrder to bool pointer used by aws sdk
-func (cfg *QueryConfig) getScanOrder() *bool {
-	var scanOrder *bool
-	switch cfg.ScanKeysOrder {
-	case ScanKeysOrderAscending:
-		scanOrder = aws.Bool(true)
-	case ScanKeysOrderDescending:
-		scanOrder = aws.Bool(false)
-	}
-	return scanOrder
+	Decoder *serializer.Decoder
 }
 
 // Validate consistent read usage with GSI
@@ -56,41 +58,42 @@ func validateGsiConsistentReadUsage(table *TableDefinition, indexName string, co
 	return nil
 }
 
-func prepareKeyConditionForQuery(table *TableDefinition, indexName string, key Key, cfg QueryConfig) (cond expression.KeyConditionBuilder, err error) {
+func prepareKeyConditionForQuery(table *TableDefinition, input QueryInput) (cond expression.KeyConditionBuilder, err error) {
 	defer func() {
 		if err != nil {
 			err = &OperationError{
 				operation:   "query prepare",
 				table:       table,
-				index:       indexName,
+				index:       input.Index,
 				internalErr: err,
 			}
 		}
 	}()
-	if key.SK != nil && cfg.SortKeyCondition.IsSet() {
+	key := input.Key
+	if key.SK != nil && input.SortKeyCondition.IsSet() {
 		return cond, fmt.Errorf("cannot set both range key value and range key condition")
 	}
 	if key.PK == nil {
 		return cond, fmt.Errorf("partition key value must be provided")
 	}
-	av, err := table.getPkForIndex(indexName, key.PK)
+	av, err := table.getPkForIndex(input.Index, key.PK)
 	if err != nil {
 		return cond, fmt.Errorf("failed to encode partition key value: %w", err)
 	}
-	pkName, err := table.getPkName(indexName)
+	pkName, err := table.getPkName(input.Index)
 	if err != nil {
 		return cond, err
 	}
 	cond = expression.Key(pkName).Equal(expression.Value(av))
-	if cfg.SortKeyCondition.IsSet() {
-		cond = cond.And(cfg.SortKeyCondition)
+	if input.SortKeyCondition.IsSet() {
+		cond = cond.And(input.SortKeyCondition)
 	} else if key.SK != nil {
-		av, err := table.getSkForIndex(indexName, key.SK)
+		av, err := table.getSkForIndex(input.Index, key.SK)
 		if err != nil {
 			return cond, fmt.Errorf("failed to encode range key value: %w", err)
 		}
 		if av != nil {
-			skName, err := table.getSkName(indexName)
+			skName, err := table.getSkName(input.Index)
 			if err != nil {
 				return cond, err
 			}
@@ -102,83 +105,94 @@ func prepareKeyConditionForQuery(table *TableDefinition, indexName string, key K
 
 func prepareQueryRequest(
 	table *TableDefinition,
-	indexName string,
-	paginationKey PaginationKey,
-	key Key,
+	input QueryInput,
 	cfg QueryConfig,
 ) (*dynamodb.QueryInput, error) {
 
-	keyCond, err := prepareKeyConditionForQuery(table, indexName, key, cfg)
+	keyCond, err := prepareKeyConditionForQuery(table, input) // indexName, key, cfg)
 	if err != nil {
 		return nil, err
 	}
 	var index *string
-	if indexName != "" {
-		index = aws.String(indexName)
+	if input.Index != "" {
+		index = aws.String(input.Index)
 	}
-	startFrom, err := paginationKey.resolveExclusiveStartKey(table, indexName)
+	startFrom, err := input.PaginationKey.resolveExclusiveStartKey(table, input.Index)
 	if err != nil {
 		return nil, &OperationError{
 			operation:   "query prepare",
 			table:       table,
-			index:       indexName,
+			index:       input.Index,
 			internalErr: err,
 		}
 	}
-	err = validateGsiConsistentReadUsage(table, indexName, cfg.ConsistentRead)
+	err = validateGsiConsistentReadUsage(table, input.Index, input.ConsistentRead.Bool())
 	if err != nil {
 		return nil, err
 	}
 
 	b := expression.NewBuilder()
 	b = b.WithKeyCondition(keyCond)
-	if cfg.FilterExpression.IsSet() {
-		b = b.WithFilter(cfg.FilterExpression)
+	if input.FilterExpression.IsSet() {
+		b = b.WithFilter(input.FilterExpression)
+	}
+	if input.ProjectionExpression != nil {
+		b = b.WithProjection(*input.ProjectionExpression)
 	}
 	exp, err := b.Build()
 	if err != nil {
 		return nil, &OperationError{
 			operation:   "query prepare",
 			table:       table,
-			index:       indexName,
+			index:       input.Index,
 			internalErr: err,
 		}
 	}
-
+	var limit *int32
+	if input.Limit > 0 {
+		limit = aws.Int32(input.Limit)
+	}
 	request := &dynamodb.QueryInput{
 		TableName:                 aws.String(table.Name),
-		ConsistentRead:            aws.Bool(cfg.ConsistentRead),
+		ConsistentRead:            aws.Bool(input.ConsistentRead.Bool()),
 		ExclusiveStartKey:         startFrom,
 		ExpressionAttributeNames:  exp.Names(),  //used to  support reserved words in filter and key condition expression,projection expression
 		ExpressionAttributeValues: exp.Values(), //values of ExpressionAttributeNames
 		FilterExpression:          exp.Filter(), //for filtering on server side
 		KeyConditionExpression:    exp.KeyCondition(),
-		ProjectionExpression:      nil, //TODO: add way to support projection expression in api
+		ProjectionExpression:      exp.Projection(),
 		IndexName:                 index,
-		Limit:                     cfg.Limit,
+		Limit:                     limit,
 		ReturnConsumedCapacity:    "",
-		ScanIndexForward:          cfg.getScanOrder(),
+		ScanIndexForward:          input.ScanKeysOrder.getScanOrder(),
 		Select:                    "",
 	}
 
 	return request, nil
 }
 
+type QueryInput struct {
+	Key                  Key                            //partion key value is required to be filled, range key is optional , if WithKeyCondition is used in options then range key is not allowed to be set
+	SortKeyCondition     expression.KeyConditionBuilder //optional condition on the range key  //cannot be used if range key value is set in the Key struct
+	Index                string                         //index to query from - pass empty string to query main table
+	PaginationKey        PaginationKey                  //from what key to start the query pagination - pass empty struct to start from beginning of the queried table/index
+	ConsistentRead       aws.Ternary
+	FilterExpression     expression.ConditionBuilder //optional filter expression to filter results on server side
+	ScanKeysOrder        ScanKeysOrder
+	Limit                int32
+	ProjectionExpression *expression.ProjectionBuilder
+}
+
 func Query(
 	ctx context.Context,
 	client QueryItemsClient,
 	table *TableDefinition,
-	key Key, //partion key value is required to be filled, range key is optional , if WithKeyCondition is used in options then range key is not allowed to be set
-	indexName string, //pass empty string to query main table
-	paginationKey PaginationKey, //from what key to start the query pagination - pass empty struct to start from beginning of the queried table/index
+	input QueryInput,
 	out any,
 	opts ...QueryOptions,
 ) (nextPage PaginationKey, err error) {
 	cfg := QueryConfig{
-		ConsistentRead: false,
-		Decoder:        nil,
-		Limit:          nil,
-		ScanKeysOrder:  ScanKeysOrderAscending,
+		Decoder: nil,
 	}
 	for _, opt := range opts {
 		opt.applyQueryOption(&cfg)
@@ -190,10 +204,11 @@ func Query(
 		cfg.Decoder = s_decoder
 	}
 
-	request, err := prepareQueryRequest(table, indexName, paginationKey, key, cfg)
+	request, err := prepareQueryRequest(table, input, cfg)
 	if err != nil {
 		return nextPage, err
 	}
+	indexName := input.Index
 	response, err := client.Query(ctx, request)
 	if err != nil {
 		return nextPage, &OperationError{
@@ -219,18 +234,19 @@ func Query(
 	return nextPage, nil
 }
 
-func QueryOf[T any](
-	ctx context.Context,
-	client QueryItemsClient,
-	table *TableDefinition,
-	key Key, //partion key value is required to be filled, range key is optional , if WithKeyCondition is used in options then range key is not allowed to be set
-	indexName string, //pass empty string to query main table
-	paginationKey PaginationKey, //from what key to start the query pagination - pass empty struct to start from beginning of the queried table/index
-	opts ...QueryOptions,
-) (results []T, nextPage PaginationKey, err error) {
-	nextPage, err = Query(ctx, client, table, key, indexName, paginationKey, &results, opts...)
-	if err != nil {
-		return nil, nextPage, err
-	}
-	return results, nextPage, nil
-}
+//TODO: enable QueryOf after finalizing api
+// func QueryOf[T any](
+// 	ctx context.Context,
+// 	client QueryItemsClient,
+// 	table *TableDefinition,
+// 	key Key, //partion key value is required to be filled, range key is optional , if WithKeyCondition is used in options then range key is not allowed to be set
+// 	indexName string, //pass empty string to query main table
+// 	paginationKey PaginationKey, //from what key to start the query pagination - pass empty struct to start from beginning of the queried table/index
+// 	opts ...QueryOptions,
+// ) (results []T, nextPage PaginationKey, err error) {
+// 	nextPage, err = Query(ctx, client, table, key, indexName, paginationKey, &results, opts...)
+// 	if err != nil {
+// 		return nil, nextPage, err
+// 	}
+// 	return results, nextPage, nil
+// }

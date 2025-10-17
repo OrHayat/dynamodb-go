@@ -115,35 +115,23 @@ func prepareTransactionDeleteRequest(
 	if err != nil {
 		return nil, err
 	}
-
-	var expressionNames map[string]string
-	var expressionValues map[string]types.AttributeValue
-	var condition *string
-	if deleteRequest.Condtion.IsSet() {
-		cond := ensureKeyExists(table).And(deleteRequest.Condtion)
-		b := expression.NewBuilder().WithCondition(cond)
-		expr, err := b.Build()
-		if err != nil {
-			return nil, err
-		}
-		condition = expr.Condition()
-		expressionNames = expr.Names()
-		expressionValues = expr.Values()
+	expr, err := prepareDeleteItemExpression(table, deleteRequest.Condtion)
+	if err != nil {
+		return nil, err
 	}
-
 	return &types.Delete{
 		Key:                                 encodedKey,
 		TableName:                           aws.String(table.Name),
-		ConditionExpression:                 condition,
-		ExpressionAttributeNames:            expressionNames,
-		ExpressionAttributeValues:           expressionValues,
+		ConditionExpression:                 expr.Condition(),
+		ExpressionAttributeNames:            expr.Names(),
+		ExpressionAttributeValues:           expr.Values(),
 		ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
 	}, nil
 }
 
 type TransactionUpdateRequest struct {
 	Key
-	ItemUpdate
+	UpdateItemInput
 }
 
 func prepareTransactionUpdateRequest(
@@ -160,7 +148,7 @@ func prepareTransactionUpdateRequest(
 	expr, err := prepareUpdateExpression(
 		table,
 		encoder,
-		updateRequest.ItemUpdate,
+		updateRequest.UpdateItemInput,
 		updateRequest.PreventsOverwrite.Bool(),
 		updateRequest.Upsert.Bool(),
 		updateRequest.ConditionalCheck,

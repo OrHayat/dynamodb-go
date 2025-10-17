@@ -22,40 +22,47 @@ type ProjectionBuilder struct {
 }
 
 type GetItemConfig struct {
-	Consistency bool
-	Decoder     *serializer.Decoder
-	ProjectionBuilder
+	Decoder *serializer.Decoder
 }
 
 type GetItemOptions interface {
 	applyGetItemOption(*GetItemConfig)
 }
+type GetItemInput struct {
+	Key            Key
+	ConsistentRead aws.Ternary
+	Projection     *expression.ProjectionBuilder
+}
+
+func prepareGetExpression(
+	projection *expression.ProjectionBuilder,
+) (expr expression.Expression, err error) {
+	if projection == nil {
+		return
+	}
+	b := expression.NewBuilder()
+	b = b.WithProjection(*projection)
+	return b.Build()
+}
 
 func prepareGetRequest(
-	cfg GetItemConfig,
 	tableName string,
+	projection *expression.ProjectionBuilder,
+	consistentRead aws.Ternary,
 	key map[string]types.AttributeValue,
 ) (*dynamodb.GetItemInput, error) {
 
-	var projection *string
-	var names map[string]string
-	if cfg.projectionEnabled {
-		b := expression.NewBuilder().WithProjection(cfg.projectionBuilder)
-		expr, err := b.Build()
-		if err != nil {
-			return nil, err
-		}
-		names = expr.Names()
-		projection = expr.Projection()
-
+	expr, err := prepareGetExpression(projection)
+	if err != nil {
+		return nil, err
 	}
 
 	return &dynamodb.GetItemInput{
 		TableName:                &tableName,
 		Key:                      key,
-		ProjectionExpression:     projection,
-		ExpressionAttributeNames: names,
-		ConsistentRead:           aws.Bool(cfg.Consistency),
+		ProjectionExpression:     expr.Projection(),
+		ExpressionAttributeNames: expr.Names(),
+		ConsistentRead:           aws.Bool(consistentRead.Bool()),
 		ReturnConsumedCapacity:   "", //TODO: add way to return consumed capacity
 	}, nil
 }
@@ -64,13 +71,12 @@ func GetItem(
 	ctx context.Context,
 	client GetItemClient,
 	table *TableDefinition,
-	key Key,
+	input GetItemInput,
 	out any,
 	opts ...GetItemOptions,
 ) (err error) {
 	cfg := GetItemConfig{
-		Consistency: true,
-		Decoder:     nil,
+		Decoder: nil,
 	}
 	for _, o := range opts {
 		o.applyGetItemOption(&cfg)
@@ -81,24 +87,24 @@ func GetItem(
 	if cfg.Decoder == nil {
 		cfg.Decoder = s_decoder
 	}
-	encodedKey, err := table.getKey(key)
+	encodedKey, err := table.getKey(input.Key)
 	if err != nil {
 		return &OperationError{
 			operation:   "get item key encoding",
 			table:       table,
-			pk:          key.PK,
-			sk:          key.SK,
+			pk:          input.Key.PK,
+			sk:          input.Key.SK,
 			internalErr: err,
 		}
 	}
 
-	request, err := prepareGetRequest(cfg, table.Name, encodedKey)
+	request, err := prepareGetRequest(table.Name, input.Projection, input.ConsistentRead, encodedKey)
 	if err != nil {
 		return &OperationError{
 			operation:   "get item prepare request",
 			table:       table,
-			pk:          key.PK,
-			sk:          key.SK,
+			pk:          input.Key.PK,
+			sk:          input.Key.SK,
 			internalErr: err,
 		}
 	}
@@ -107,8 +113,8 @@ func GetItem(
 		return &OperationError{
 			operation:   "get item",
 			table:       table,
-			pk:          key.PK,
-			sk:          key.SK,
+			pk:          input.Key.PK,
+			sk:          input.Key.SK,
 			internalErr: err,
 		}
 	}
@@ -117,8 +123,8 @@ func GetItem(
 		return &OperationError{
 			operation:   "get item",
 			table:       table,
-			pk:          key.PK,
-			sk:          key.SK,
+			pk:          input.Key.PK,
+			sk:          input.Key.SK,
 			internalErr: ErrItemNotFound,
 		}
 	}
@@ -128,8 +134,8 @@ func GetItem(
 		return &OperationError{
 			operation:   "get item unmarshal",
 			table:       table,
-			pk:          key.PK,
-			sk:          key.SK,
+			pk:          input.Key.PK,
+			sk:          input.Key.SK,
 			internalErr: err,
 		}
 	}
@@ -140,10 +146,10 @@ func GetItemOf[T any](
 	ctx context.Context,
 	client GetItemClient,
 	table *TableDefinition,
-	key Key,
+	input GetItemInput,
 	opts ...GetItemOptions,
 ) (out T, err error) {
-	err = GetItem(ctx, client, table, key, &out, opts...)
+	err = GetItem(ctx, client, table, input, &out, opts...)
 	return
 }
 
@@ -151,11 +157,11 @@ func GetAsJSON(
 	ctx context.Context,
 	client GetItemClient,
 	table *TableDefinition,
-	key Key,
+	input GetItemInput,
 	opts ...GetItemOptions,
 ) (out map[string]any, err error) {
 	var res any
-	err = GetItem(ctx, client, table, key, &res, opts...)
+	err = GetItem(ctx, client, table, input, &res, opts...)
 	if err != nil {
 		return nil, err
 	}

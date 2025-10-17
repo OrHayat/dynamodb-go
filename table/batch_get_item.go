@@ -21,19 +21,17 @@ type BatchGetItemOptions interface {
 }
 
 type BatchGetItemConfig struct {
-	ConsistentRead bool
-	Decoder        *serializer.Decoder
-	ProjectionBuilder
+	Decoder *serializer.Decoder
 }
 
 func prepareBatchGetItemRequestSingleTable(
 	cfg *BatchGetItemConfig,
 	table *TableDefinition,
-	keys []Key,
+	input BatchGetSingleTableInput,
 
 ) (request *dynamodb.BatchGetItemInput, err error) {
 	var keysToGet []map[string]types.AttributeValue
-	for _, key := range keys {
+	for _, key := range input.Keys {
 		encodedKey, err := table.getKey(key)
 		if err != nil {
 			return nil, &OperationError{
@@ -44,21 +42,16 @@ func prepareBatchGetItemRequestSingleTable(
 		}
 		keysToGet = append(keysToGet, encodedKey)
 	}
-	var projection *string
-	var names map[string]string
-	if cfg.projectionEnabled {
-		b := expression.NewBuilder().WithProjection(cfg.projectionBuilder)
-		expr, err := b.Build()
-		if err == nil {
-			projection = expr.Projection()
-			names = expr.Names()
-		}
+	expr, err := prepareGetExpression(input.ProjectionExpression)
+	if err != nil {
+		return nil, err
 	}
+
 	tableRequest := types.KeysAndAttributes{
-		ConsistentRead:           aws.Bool(cfg.ConsistentRead),
+		ConsistentRead:           aws.Bool(input.ConsistentRead.Bool()),
 		Keys:                     keysToGet,
-		ProjectionExpression:     projection,
-		ExpressionAttributeNames: names,
+		ProjectionExpression:     expr.Projection(),
+		ExpressionAttributeNames: expr.Names(),
 	}
 
 	requestedItems := map[string]types.KeysAndAttributes{
@@ -76,17 +69,22 @@ type BatchGetItemInput struct {
 	Keys  []Key
 }
 
+type BatchGetSingleTableInput struct {
+	Keys                 []Key
+	ConsistentRead       aws.Ternary
+	ProjectionExpression *expression.ProjectionBuilder
+}
+
 func BatchGetItemSingleTable(
 	ctx context.Context,
 	client BatchGetItemClient,
 	table *TableDefinition,
-	keys []Key,
+	input BatchGetSingleTableInput,
 	out any,
 	options ...BatchGetItemOptions,
 ) error {
 	cfg := BatchGetItemConfig{
-		ConsistentRead: false,
-		Decoder:        nil,
+		Decoder: nil,
 	}
 	for _, opt := range options {
 		opt.applyBatchGetItemOption(&cfg)
@@ -97,7 +95,7 @@ func BatchGetItemSingleTable(
 	if cfg.Decoder == nil {
 		cfg.Decoder = s_decoder
 	}
-	request, err := prepareBatchGetItemRequestSingleTable(&cfg, table, keys)
+	request, err := prepareBatchGetItemRequestSingleTable(&cfg, table, input)
 	if err != nil {
 		return err
 	}
@@ -138,10 +136,10 @@ func BatchGetItemsFromSingleTable[T any](
 	ctx context.Context,
 	client BatchGetItemClient,
 	table *TableDefinition,
-	keys []Key,
+	input BatchGetSingleTableInput,
 	options ...BatchGetItemOptions,
 ) ([]T, error) {
 	var out []T
-	err := BatchGetItemSingleTable(ctx, client, table, keys, &out, options...)
+	err := BatchGetItemSingleTable(ctx, client, table, input, &out, options...)
 	return out, err
 }
