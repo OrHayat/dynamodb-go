@@ -269,23 +269,39 @@ type AttributeDefinition struct {
 	Type types.ScalarAttributeType
 }
 
-func encodeString(item any) (types.AttributeValue, error) {
+func (ad AttributeDefinition) encodeToAv(item any) (types.AttributeValue, error) {
+	if ad.Name == "" {
+		return nil, nil
+	}
+	switch ad.Type {
+	case types.ScalarAttributeTypeS:
+		return encodeString(ad.Name, item)
+	case types.ScalarAttributeTypeB:
+		return encodeBytes(ad.Name, item)
+	case types.ScalarAttributeTypeN:
+		return encodeNumber(ad.Name, item)
+	default:
+		return nil, fmt.Errorf("unsupported attribute type %s for attribute %s", ad.Type, ad.Name)
+	}
+}
+
+func encodeString(attributeName string, item any) (types.AttributeValue, error) {
 	val := reflect.ValueOf(item)
 	if val.Kind() == reflect.String {
 		return &types.AttributeValueMemberS{Value: val.String()}, nil
 	}
-	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB string", item)
+	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB string for attribute %s", item, attributeName)
 }
 
-func encodeBytes(item any) (types.AttributeValue, error) {
+func encodeBytes(attributeName string, item any) (types.AttributeValue, error) {
 	casted, ok := item.([]byte)
 	if ok {
 		return &types.AttributeValueMemberB{Value: casted}, nil
 	}
-	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB byte blob", item)
+	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB byte blob for attribute %s", item, attributeName)
 }
 
-func encodeNumber(item any) (types.AttributeValue, error) {
+func encodeNumber(attributeName string, item any) (types.AttributeValue, error) {
 	val := reflect.ValueOf(item)
 	switch val.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -295,23 +311,7 @@ func encodeNumber(item any) (types.AttributeValue, error) {
 	case reflect.Float32, reflect.Float64:
 		return &types.AttributeValueMemberN{Value: strconv.FormatFloat(val.Float(), 'f', -1, val.Type().Bits())}, nil
 	}
-	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB number", item)
-}
-
-func (ad AttributeDefinition) encodeToAv(item any) (types.AttributeValue, error) {
-	if ad.Name == "" {
-		return nil, nil
-	}
-	switch ad.Type {
-	case types.ScalarAttributeTypeS:
-		return encodeString(item)
-	case types.ScalarAttributeTypeB:
-		return encodeBytes(item)
-	case types.ScalarAttributeTypeN:
-		return encodeNumber(item)
-	default:
-		return nil, fmt.Errorf("unsupported attribute type %s for attribute %s", ad.Type, ad.Name)
-	}
+	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB number for attribute %s", item, attributeName)
 }
 
 func ensureKeyNotExists(table *TableDefinition) expression.ConditionBuilder {
