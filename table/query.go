@@ -224,19 +224,16 @@ func Query(
 	return nextPage, nil
 }
 
-//TODO: enable QueryOf after finalizing api
-// func QueryOf[T any](
-// 	ctx context.Context,
-// 	client QueryItemsClient,
-// 	table *TableDefinition,
-// 	key Key, //partion key value is required to be filled, range key is optional , if WithKeyCondition is used in options then range key is not allowed to be set
-// 	indexName string, //pass empty string to query main table
-// 	paginationKey PaginationKey, //from what key to start the query pagination - pass empty struct to start from beginning of the queried table/index
-// 	opts ...QueryOptions,
-// ) (results []T, nextPage PaginationKey, err error) {
-// 	nextPage, err = Query(ctx, client, table, key, indexName, paginationKey, &results, opts...)
-// 	if err != nil {
-// 		return nil, nextPage, err
-// 	}
-// 	return results, nextPage, nil
-// }
+func QueryOf[T any](
+	ctx context.Context,
+	client QueryItemsClient,
+	table *TableDefinition,
+	input QueryInput,
+	opts ...QueryOptions,
+) (results []T, nextPage PaginationKey, err error) {
+	nextPage, err = Query(ctx, client, table, input, opts)
+	if err != nil {
+		return nil, nextPage, err
+	}
+	return results, nextPage, nil
+}

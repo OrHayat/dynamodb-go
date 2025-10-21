@@ -4,6 +4,8 @@ package table
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -267,35 +269,49 @@ type AttributeDefinition struct {
 	Type types.ScalarAttributeType
 }
 
+func encodeString(item any) (types.AttributeValue, error) {
+	val := reflect.ValueOf(item)
+	if val.Kind() == reflect.String {
+		return &types.AttributeValueMemberS{Value: val.String()}, nil
+	}
+	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB string", item)
+}
+
+func encodeBytes(item any) (types.AttributeValue, error) {
+	casted, ok := item.([]byte)
+	if ok {
+		return &types.AttributeValueMemberB{Value: casted}, nil
+	}
+	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB byte blob", item)
+}
+
+func encodeNumber(item any) (types.AttributeValue, error) {
+	val := reflect.ValueOf(item)
+	switch val.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return &types.AttributeValueMemberN{Value: strconv.FormatInt(val.Int(), 10)}, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return &types.AttributeValueMemberN{Value: strconv.FormatUint(val.Uint(), 10)}, nil
+	case reflect.Float32, reflect.Float64:
+		return &types.AttributeValueMemberN{Value: strconv.FormatFloat(val.Float(), 'f', -1, val.Type().Bits())}, nil
+	}
+	return nil, fmt.Errorf("cannot convert item of type %T to dynamoDB number", item)
+}
+
 func (ad AttributeDefinition) encodeToAv(item any) (types.AttributeValue, error) {
 	if ad.Name == "" {
 		return nil, nil
 	}
-	encoded, err := s_encoder.Marshal(item)
-	if err != nil {
-		return nil, err
-	}
 	switch ad.Type {
 	case types.ScalarAttributeTypeS:
-		_, ok := encoded.(*types.AttributeValueMemberS)
-		if !ok {
-			return nil, fmt.Errorf("encoded attribute to %T and not to string", item)
-		}
-	case types.ScalarAttributeTypeN:
-		_, ok := encoded.(*types.AttributeValueMemberN)
-		if !ok {
-			return nil, fmt.Errorf("encoded attribute to %T and not to number", item)
-
-		}
+		return encodeString(item)
 	case types.ScalarAttributeTypeB:
-		_, ok := encoded.(*types.AttributeValueMemberB)
-		if !ok {
-			return nil, fmt.Errorf("encoded attribute to %T and not to bool", item)
-		}
+		return encodeBytes(item)
+	case types.ScalarAttributeTypeN:
+		return encodeNumber(item)
 	default:
-		return nil, fmt.Errorf("unsopported item type %T", item)
+		return nil, fmt.Errorf("unsupported attribute type %s for attribute %s", ad.Type, ad.Name)
 	}
-	return encoded, nil
 }
 
 func ensureKeyNotExists(table *TableDefinition) expression.ConditionBuilder {
