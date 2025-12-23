@@ -128,7 +128,7 @@ func (d *TableDefinition) getSkName(index string) (string, error) {
 		return gsi.RangeKey.Name, nil
 	}
 	if lsi := d.getLSI(index); lsi != nil {
-		return d.RangeKey.Name, nil
+		return lsi.RangeKey.Name, nil
 	}
 	return "", fmt.Errorf("index %q not found", index)
 }
