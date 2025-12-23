@@ -99,11 +99,20 @@ func FullBindingsForView(view string) ([]KeyBinding, string) {
 		return []KeyBinding{
 			{Key: "j / ↓", Desc: "Move down"},
 			{Key: "k / ↑", Desc: "Move up"},
-			{Key: "enter", Desc: "Open table"},
+			{Key: "enter / s", Desc: "Scan table"},
+			{Key: "f", Desc: "Query table"},
+			{Key: "d", Desc: "Describe table"},
 			{Key: "r", Desc: "Refresh table list"},
 			{Key: "q / esc", Desc: "Quit"},
 			{Key: "ctrl+q", Desc: "Quit (global)"},
 		}, "Tables List"
+	case "browser_describe":
+		return []KeyBinding{
+			{Key: "enter / s", Desc: "Scan table"},
+			{Key: "f", Desc: "Query table"},
+			{Key: "q / esc", Desc: "Back to tables list"},
+			{Key: "ctrl+q", Desc: "Quit"},
+		}, "Table Info"
 	case "browser":
 		return []KeyBinding{
 			{Key: "j / ↓", Desc: "Move down"},
@@ -112,6 +121,7 @@ func FullBindingsForView(view string) ([]KeyBinding, string) {
 			{Key: "l / →", Desc: "Scroll columns right"},
 			{Key: "n", Desc: "Next page"},
 			{Key: "p", Desc: "Previous page"},
+			{Key: "d", Desc: "Describe table info"},
 			{Key: "f", Desc: "Find/query mode"},
 			{Key: "s", Desc: "Switch to scan mode"},
 			{Key: "ctrl+c", Desc: "Copy keys from current item"},
@@ -121,10 +131,12 @@ func FullBindingsForView(view string) ([]KeyBinding, string) {
 		}, "Table Browser"
 	case "browser_query":
 		return []KeyBinding{
-			{Key: "tab", Desc: "Switch between PK/SK input"},
+			{Key: "↑ / ↓ / tab", Desc: "Switch between Index/PK/SK"},
+			{Key: "enter", Desc: "Open index dropdown / Execute query"},
+			{Key: "j / k", Desc: "Navigate dropdown (when open)"},
 			{Key: "ctrl+v", Desc: "Paste copied key value"},
-			{Key: "enter", Desc: "Execute query"},
-			{Key: "esc", Desc: "Cancel query input"},
+			{Key: "ctrl+d", Desc: "Clear current field"},
+			{Key: "esc", Desc: "Close dropdown / Cancel input"},
 			{Key: "ctrl+q", Desc: "Quit"},
 		}, "Query Input"
 	case "detail":

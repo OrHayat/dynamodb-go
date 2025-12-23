@@ -69,10 +69,28 @@ func (m TablesListModel) Update(msg tea.Msg) (TablesListModel, tea.Cmd) {
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case "enter":
+		case "enter", "s":
+			// Scan table (default)
 			if len(m.tables) > 0 {
+				tableName := m.tables[m.cursor]
 				return m, func() tea.Msg {
-					return messages.NavigateToTableMsg{TableName: m.tables[m.cursor]}
+					return messages.NavigateToTableMsg{TableName: tableName, InitialMode: messages.TableModeScan}
+				}
+			}
+		case "f":
+			// Query table
+			if len(m.tables) > 0 {
+				tableName := m.tables[m.cursor]
+				return m, func() tea.Msg {
+					return messages.NavigateToTableMsg{TableName: tableName, InitialMode: messages.TableModeQuery}
+				}
+			}
+		case "d":
+			// Describe table
+			if len(m.tables) > 0 {
+				tableName := m.tables[m.cursor]
+				return m, func() tea.Msg {
+					return messages.NavigateToTableMsg{TableName: tableName, InitialMode: messages.TableModeDescribe}
 				}
 			}
 		case "r":

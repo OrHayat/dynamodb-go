@@ -17,10 +17,22 @@ import (
 type browserMode int
 
 const (
-	modeScan browserMode = iota
+	modeLoading browserMode = iota // Initial state, loading schema
+	modeDescribe                   // Schema loaded, choose scan or query
+	modeScan
 	modeQuery
 	modeQueryInput
 )
+
+// indexOption represents a queryable index (table or GSI/LSI)
+type indexOption struct {
+	name   string // empty for table, index name for GSI/LSI
+	label  string // display label e.g. "Table", "GSI: byEmail"
+	pkName string // partition key attribute name
+	skName string // sort key attribute name (empty if none)
+	isGSI  bool
+	isLSI  bool
+}
 
 // TableBrowserModel displays items in a table
 type TableBrowserModel struct {
@@ -41,21 +53,30 @@ type TableBrowserModel struct {
 	// Query input
 	pkInput      textinput.Model
 	skInput      textinput.Model
-	inputFocused int // 0 = pk, 1 = sk
+	inputFocused int // 0 = index, 1 = pk, 2 = sk
+
+	// Index selection
+	selectedIndex     string // empty = table, otherwise index name
+	showIndexDropdown bool
+	indexDropdownIdx  int
+	indexOptions      []indexOption // populated from schema
 
 	// Yanked key values from selected row
 	yankedKeys map[string]string // e.g. "table_pk", "table_sk", "gsi_MyIndex_pk", "lsi_MyLSI_sk"
 
-	loading components.Loading
-	err     error
+	loading      components.Loading
+	err          error
+	pendingMode  int         // mode to switch to after schema loads (0=scan, 1=query, 2=describe)
+	previousMode browserMode // mode to return to when pressing esc in QUERY INPUT
 
-	width        int
+	width int
 	height       int
 	columnOffset int // for horizontal scrolling
 }
 
 // NewTableBrowserModel creates a new table browser view
-func NewTableBrowserModel(client *dynamo.Client, tableName string) TableBrowserModel {
+// initialMode: 0=scan, 1=query, 2=describe (matches messages.TableMode)
+func NewTableBrowserModel(client *dynamo.Client, tableName string, initialMode int) TableBrowserModel {
 	pkInput := textinput.New()
 	pkInput.Placeholder = "Partition key value"
 	pkInput.Focus()
@@ -85,12 +106,13 @@ func NewTableBrowserModel(client *dynamo.Client, tableName string) TableBrowserM
 	t.SetStyles(s)
 
 	return TableBrowserModel{
-		client:    client,
-		tableName: tableName,
-		loading:   components.NewLoading("Loading table schema..."),
-		pkInput:   pkInput,
-		skInput:   skInput,
-		table:     t,
+		client:      client,
+		tableName:   tableName,
+		loading:     components.NewLoading("Loading table schema..."),
+		pkInput:     pkInput,
+		skInput:     skInput,
+		table:       t,
+		pendingMode: initialMode,
 	}
 }
 
@@ -123,8 +145,33 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case dynamo.TableSchemaMsg:
 		m.schema = &msg.Schema
-		m.loading.SetMessage("Scanning items...")
-		return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+		m.buildIndexOptions()
+		// Apply pending mode
+		switch m.pendingMode {
+		case 1: // Query - came from tables list
+			m.previousMode = modeLoading // sentinel: esc will go to tables list
+			m.mode = modeQueryInput
+			m.inputFocused = 0
+			m.pkInput.Blur()
+			m.skInput.Blur()
+			if len(m.indexOptions) > 0 {
+				opt := m.indexOptions[0]
+				m.pkInput.Placeholder = opt.pkName + " value"
+				if opt.skName != "" {
+					m.skInput.Placeholder = opt.skName + " value (optional)"
+				} else {
+					m.skInput.Placeholder = "(no sort key)"
+				}
+			}
+			return m, nil
+		case 2: // Describe
+			m.mode = modeDescribe
+			return m, nil
+		default: // Scan (0 or any other)
+			m.mode = modeScan
+			m.loading.SetMessage("Scanning items...")
+			return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+		}
 
 	case dynamo.ItemsLoadedMsg:
 		m.items = msg.Items
@@ -141,6 +188,37 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 		// Handle query input mode
 		if m.mode == modeQueryInput {
 			return m.handleQueryInput(msg)
+		}
+
+		// Handle describe table menu
+		if m.mode == modeDescribe {
+			switch msg.String() {
+			case "enter", "s":
+				// Start scan
+				m.mode = modeScan
+				m.loading.SetMessage("Scanning items...")
+				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+			case "f":
+				// Enter query mode from DESCRIBE
+				m.previousMode = modeDescribe
+				m.mode = modeQueryInput
+				m.inputFocused = 0
+				m.pkInput.Blur()
+				m.skInput.Blur()
+				if len(m.indexOptions) > 0 {
+					opt := m.indexOptions[0]
+					m.pkInput.Placeholder = opt.pkName + " value"
+					if opt.skName != "" {
+						m.skInput.Placeholder = opt.skName + " value (optional)"
+					} else {
+						m.skInput.Placeholder = "(no sort key)"
+					}
+				}
+				return m, nil
+			case "q", "esc":
+				return m, func() tea.Msg { return messages.NavigateBackMsg{} }
+			}
+			return m, nil
 		}
 
 		switch msg.String() {
@@ -173,6 +251,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				if m.mode == modeQuery {
 					return m, m.client.QueryCmd(m.schema, dbtable.QueryInput{
 						Key:           dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
+						Index:         m.selectedIndex,
 						PaginationKey: m.currentStartKey,
 						Limit:         50,
 					})
@@ -192,6 +271,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				if m.mode == modeQuery {
 					return m, m.client.QueryCmd(m.schema, dbtable.QueryInput{
 						Key:           dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
+						Index:         m.selectedIndex,
 						PaginationKey: m.currentStartKey,
 						Limit:         50,
 					})
@@ -202,22 +282,52 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				})
 			}
 		case "f":
-			// Enter query/find mode
+			// Enter query/find mode from SCAN or QUERY RESULTS
+			m.previousMode = m.mode
 			m.mode = modeQueryInput
-			m.pkInput.Focus()
-			return m, textinput.Blink
+			m.inputFocused = 0 // Start on index row
+			m.pkInput.Blur()
+			m.skInput.Blur()
+			// Reset to table if no selection
+			if m.selectedIndex == "" && len(m.indexOptions) > 0 {
+				opt := m.indexOptions[0]
+				m.pkInput.Placeholder = opt.pkName + " value"
+				if opt.skName != "" {
+					m.skInput.Placeholder = opt.skName + " value (optional)"
+				} else {
+					m.skInput.Placeholder = "(no sort key)"
+				}
+			}
+			return m, nil
 		case "s":
-			// Switch to scan mode (also works to escape failed query)
-			if (m.mode == modeQuery || m.err != nil) && m.schema != nil {
+			// Switch to scan mode
+			if m.schema != nil {
 				m.mode = modeScan
 				m.err = nil
 				m.pageHistory = nil
 				m.columnOffset = 0
+				m.selectedIndex = "" // Reset to table
 				m.loading.SetMessage("Scanning items...")
 				m.items = nil
 				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
 			}
+		case "d":
+			// Show describe/table info
+			if m.schema != nil {
+				m.mode = modeDescribe
+				return m, nil
+			}
 		case "q", "esc":
+			// QUERY RESULTS → go back to QUERY INPUT
+			if m.mode == modeQuery {
+				m.previousMode = modeQuery
+				m.mode = modeQueryInput
+				m.inputFocused = 0
+				m.pkInput.Blur()
+				m.skInput.Blur()
+				return m, nil
+			}
+			// SCAN → go back to Tables List
 			return m, func() tea.Msg { return messages.NavigateBackMsg{} }
 		case "left", "h":
 			// Scroll columns left
@@ -249,6 +359,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				if m.mode == modeQuery {
 					return m, m.client.QueryCmd(m.schema, dbtable.QueryInput{
 						Key:   dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
+						Index: m.selectedIndex,
 						Limit: 50,
 					})
 				}
@@ -263,7 +374,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 	}
 
 	// Update loading spinner
-	if m.items == nil && m.err == nil {
+	if m.mode == modeLoading {
 		var cmd tea.Cmd
 		m.loading, cmd = m.loading.Update(msg)
 		cmds = append(cmds, cmd)
@@ -273,60 +384,127 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 }
 
 func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+
+	// Handle dropdown mode separately
+	if m.showIndexDropdown {
+		return m.handleIndexDropdown(msg)
+	}
+
+	switch key {
 	case "esc":
-		// Go back to previous mode (scan or query results) without clearing inputs
-		if m.items != nil {
-			m.mode = modeQuery // Go back to query results if we have them
-		} else {
-			m.mode = modeScan
+		// Go back to previous mode (or Tables List if came from there)
+		if m.previousMode == modeLoading {
+			return m, func() tea.Msg { return messages.NavigateBackMsg{} }
 		}
+		m.mode = m.previousMode
 		return m, nil
-	case "tab", "shift+tab":
-		// Toggle between inputs
-		if m.inputFocused == 0 {
-			m.inputFocused = 1
-			m.pkInput.Blur()
-			m.skInput.Focus()
-		} else {
-			m.inputFocused = 0
-			m.skInput.Blur()
+
+	case "tab":
+		// Cycle forward: index -> pk -> sk -> index
+		m.pkInput.Blur()
+		m.skInput.Blur()
+		m.inputFocused = (m.inputFocused + 1) % 3
+		if m.inputFocused == 1 {
 			m.pkInput.Focus()
+		} else if m.inputFocused == 2 {
+			m.skInput.Focus()
 		}
 		return m, textinput.Blink
-	case "down":
-		// Move to SK
-		if m.inputFocused == 0 {
-			m.inputFocused = 1
-			m.pkInput.Blur()
-			m.skInput.Focus()
-			return m, textinput.Blink
-		}
-		return m, nil
-	case "up":
-		// Move to PK
+
+	case "shift+tab":
+		// Cycle backward: sk -> pk -> index -> sk
+		m.pkInput.Blur()
+		m.skInput.Blur()
+		m.inputFocused = (m.inputFocused + 2) % 3 // +2 is same as -1 mod 3
 		if m.inputFocused == 1 {
-			m.inputFocused = 0
-			m.skInput.Blur()
 			m.pkInput.Focus()
+		} else if m.inputFocused == 2 {
+			m.skInput.Focus()
+		}
+		return m, textinput.Blink
+
+	case "down":
+		// Move down through rows
+		if m.inputFocused < 2 {
+			m.pkInput.Blur()
+			m.skInput.Blur()
+			m.inputFocused++
+			if m.inputFocused == 1 {
+				m.pkInput.Focus()
+			} else if m.inputFocused == 2 {
+				m.skInput.Focus()
+			}
 			return m, textinput.Blink
 		}
 		return m, nil
+
+	case "up":
+		// Move up through rows
+		if m.inputFocused > 0 {
+			m.pkInput.Blur()
+			m.skInput.Blur()
+			m.inputFocused--
+			if m.inputFocused == 1 {
+				m.pkInput.Focus()
+			}
+			// inputFocused == 0 means index row, no text input focused
+			return m, textinput.Blink
+		}
+		return m, nil
+
+	case "ctrl+d":
+		// Delete/clear current input field
+		if m.inputFocused == 1 {
+			m.pkInput.SetValue("")
+		} else if m.inputFocused == 2 {
+			m.skInput.SetValue("")
+		}
+		return m, nil
+
 	case "ctrl+v":
-		// Paste yanked key value (for now: table keys only, later: index-aware)
+		// Paste yanked key value based on selected index
 		if m.yankedKeys != nil {
-			if m.inputFocused == 0 {
-				if v, ok := m.yankedKeys["table_pk"]; ok {
+			opt := m.getSelectedIndexOption()
+			var pkKey, skKey string
+			if opt.name == "" {
+				pkKey = "table_pk"
+				skKey = "table_sk"
+			} else if opt.isGSI {
+				pkKey = fmt.Sprintf("gsi_%s_pk", opt.name)
+				skKey = fmt.Sprintf("gsi_%s_sk", opt.name)
+			} else if opt.isLSI {
+				pkKey = "table_pk" // LSI uses table's PK
+				skKey = fmt.Sprintf("lsi_%s_sk", opt.name)
+			}
+
+			if m.inputFocused == 1 {
+				if v, ok := m.yankedKeys[pkKey]; ok {
 					m.pkInput.SetValue(v)
 				}
-			} else {
-				if v, ok := m.yankedKeys["table_sk"]; ok {
+			} else if m.inputFocused == 2 {
+				if v, ok := m.yankedKeys[skKey]; ok {
 					m.skInput.SetValue(v)
 				}
 			}
 		}
 		return m, nil
+
 	case "enter":
+		// On index row, open dropdown
+		if m.inputFocused == 0 {
+			m.showIndexDropdown = true
+			// Find current index in options
+			for i, opt := range m.indexOptions {
+				if opt.name == m.selectedIndex {
+					m.indexDropdownIdx = i
+					break
+				}
+			}
+			return m, nil
+		}
+
+		// On PK/SK rows, execute query
 		if m.pkInput.Value() == "" {
 			return m, nil // PK is required
 		}
@@ -338,6 +516,7 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 		m.items = nil
 		input := dbtable.QueryInput{
 			Key:   dbtable.Key{PK: m.pkInput.Value()},
+			Index: m.selectedIndex,
 			Limit: 50,
 		}
 		if m.skInput.Value() != "" {
@@ -346,14 +525,88 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 		return m, m.client.QueryCmd(m.schema, input)
 	}
 
-	// Update the focused input
+	// Update the focused text input (only pk and sk rows)
 	var cmd tea.Cmd
-	if m.inputFocused == 0 {
+	if m.inputFocused == 1 {
 		m.pkInput, cmd = m.pkInput.Update(msg)
-	} else {
+	} else if m.inputFocused == 2 {
 		m.skInput, cmd = m.skInput.Update(msg)
 	}
 	return m, cmd
+}
+
+func (m TableBrowserModel) renderIndexDropdown() string {
+	var s strings.Builder
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(components.Primary).
+		Padding(0, 1).
+		MarginLeft(15)
+
+	var rows []string
+	for i, opt := range m.indexOptions {
+		label := opt.label
+		if opt.pkName != "" {
+			keyInfo := opt.pkName
+			if opt.skName != "" {
+				keyInfo += ", " + opt.skName
+			}
+			label += " (" + keyInfo + ")"
+		}
+
+		if i == m.indexDropdownIdx {
+			label = components.SelectedItem.Render("● " + label)
+		} else {
+			label = "  " + label
+		}
+		rows = append(rows, label)
+	}
+
+	s.WriteString(boxStyle.Render(strings.Join(rows, "\n")))
+	s.WriteString("\n")
+	return s.String()
+}
+
+func (m TableBrowserModel) handleIndexDropdown(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.showIndexDropdown = false
+		return m, nil
+
+	case "up", "k":
+		if m.indexDropdownIdx > 0 {
+			m.indexDropdownIdx--
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.indexDropdownIdx < len(m.indexOptions)-1 {
+			m.indexDropdownIdx++
+		}
+		return m, nil
+
+	case "enter":
+		// Select the index
+		if m.indexDropdownIdx < len(m.indexOptions) {
+			m.selectedIndex = m.indexOptions[m.indexDropdownIdx].name
+			// Update placeholders
+			opt := m.indexOptions[m.indexDropdownIdx]
+			m.pkInput.Placeholder = opt.pkName + " value"
+			if opt.skName != "" {
+				m.skInput.Placeholder = opt.skName + " value (optional)"
+			} else {
+				m.skInput.Placeholder = "(no sort key)"
+			}
+			// Clear values since keys changed
+			m.pkInput.SetValue("")
+			m.skInput.SetValue("")
+		}
+		m.showIndexDropdown = false
+		return m, nil
+	}
+
+	return m, nil
 }
 
 func (m *TableBrowserModel) extractColumns() {
@@ -550,20 +803,109 @@ func (m TableBrowserModel) View() string {
 	var s strings.Builder
 
 	// Header
-	modeStr := "SCAN"
-	if m.mode == modeQuery || m.mode == modeQueryInput {
-		modeStr = "QUERY"
+	var modeStr string
+	switch m.mode {
+	case modeLoading:
+		modeStr = "LOADING"
+	case modeDescribe:
+		modeStr = "DESCRIBE"
+	case modeScan:
+		modeStr = "SCAN"
+	case modeQuery, modeQueryInput:
+		if m.selectedIndex != "" {
+			modeStr = "QUERY:" + m.selectedIndex
+		} else {
+			modeStr = "QUERY"
+		}
 	}
 	title := fmt.Sprintf("%s [%s]", m.tableName, modeStr)
 	s.WriteString(components.Title.Render(title) + "\n")
 
+	// Loading state
+	if m.mode == modeLoading {
+		s.WriteString("\n" + m.loading.View() + "\n")
+		return components.Container.Render(s.String())
+	}
+
+	// Describe table menu
+	if m.mode == modeDescribe {
+		s.WriteString("\n")
+		if m.schema != nil {
+			// Show table info
+			s.WriteString(components.HelpKey.Render("Partition Key: ") + m.schema.PrimaryKey.Name + "\n")
+			if m.schema.RangeKey.Name != "" {
+				s.WriteString(components.HelpKey.Render("Sort Key:      ") + m.schema.RangeKey.Name + "\n")
+			}
+			if len(m.schema.GSI) > 0 {
+				s.WriteString(components.HelpKey.Render("GSIs:          "))
+				for i, gsi := range m.schema.GSI {
+					if i > 0 {
+						s.WriteString(", ")
+					}
+					s.WriteString(gsi.IndexName)
+				}
+				s.WriteString("\n")
+			}
+			if len(m.schema.LSI) > 0 {
+				s.WriteString(components.HelpKey.Render("LSIs:          "))
+				for i, lsi := range m.schema.LSI {
+					if i > 0 {
+						s.WriteString(", ")
+					}
+					s.WriteString(lsi.IndexName)
+				}
+				s.WriteString("\n")
+			}
+		}
+		s.WriteString("\n")
+		s.WriteString(components.MutedStyle.Render("enter/s: scan | f: query | esc: back"))
+		return components.Container.Render(s.String())
+	}
+
 	// Query input mode
 	if m.mode == modeQueryInput {
 		s.WriteString("\n")
-		s.WriteString("Partition Key: " + m.pkInput.View() + "\n")
-		s.WriteString("Sort Key:      " + m.skInput.View() + "\n")
+
+		// Get current index option for display
+		opt := m.getSelectedIndexOption()
+
+		// Index row
+		indexLabel := opt.label
+		if opt.pkName != "" {
+			keyInfo := opt.pkName
+			if opt.skName != "" {
+				keyInfo += ", " + opt.skName
+			}
+			indexLabel += " (" + keyInfo + ")"
+		}
+
+		indexRowStyle := components.MutedStyle
+		if m.inputFocused == 0 {
+			indexRowStyle = lipgloss.NewStyle().Foreground(components.Primary).Bold(true)
+		}
+		s.WriteString(indexRowStyle.Render("Index:         "+indexLabel+" ▼") + "\n")
+
+		// Show dropdown if open
+		if m.showIndexDropdown {
+			s.WriteString(m.renderIndexDropdown())
+		}
+
+		// PK row
+		pkLabel := "Partition Key: "
+		if m.inputFocused == 1 {
+			pkLabel = components.HelpKey.Render("Partition Key: ")
+		}
+		s.WriteString(pkLabel + m.pkInput.View() + "\n")
+
+		// SK row
+		skLabel := "Sort Key:      "
+		if m.inputFocused == 2 {
+			skLabel = components.HelpKey.Render("Sort Key:      ")
+		}
+		s.WriteString(skLabel + m.skInput.View() + "\n")
+
 		s.WriteString("\n")
-		s.WriteString(components.MutedStyle.Render("Tab to switch fields, Enter to query, Esc to cancel"))
+		s.WriteString(components.MutedStyle.Render("↑/↓/tab: switch fields | enter: select index / query | esc: cancel"))
 		return components.Container.Render(s.String())
 	}
 
@@ -602,7 +944,7 @@ func (m TableBrowserModel) View() string {
 	s.WriteString(m.table.View() + "\n")
 
 	// Help
-	help := "↑/↓: rows | ←/→: columns | Enter: view | /: query | s: scan | r: refresh | Esc: back"
+	help := "↑/↓: rows | ←/→: columns | enter: view | d: describe | f: query | s: scan | r: refresh | esc: back"
 	s.WriteString("\n" + components.MutedStyle.Render(help))
 
 	return components.Container.Render(s.String())
@@ -637,4 +979,59 @@ func (m TableBrowserModel) formatValue(v any) string {
 // IsInQueryInput returns true if browser is in query input mode
 func (m TableBrowserModel) IsInQueryInput() bool {
 	return m.mode == modeQueryInput
+}
+
+// IsInDescribeMode returns true if browser is showing the describe table menu
+func (m TableBrowserModel) IsInDescribeMode() bool {
+	return m.mode == modeDescribe
+}
+
+// buildIndexOptions creates the list of queryable indexes from schema
+func (m *TableBrowserModel) buildIndexOptions() {
+	if m.schema == nil {
+		return
+	}
+
+	m.indexOptions = []indexOption{
+		{
+			name:   "",
+			label:  "Table",
+			pkName: m.schema.PrimaryKey.Name,
+			skName: m.schema.RangeKey.Name,
+		},
+	}
+
+	for _, gsi := range m.schema.GSI {
+		m.indexOptions = append(m.indexOptions, indexOption{
+			name:   gsi.IndexName,
+			label:  "GSI: " + gsi.IndexName,
+			pkName: gsi.PrimaryKey.Name,
+			skName: gsi.RangeKey.Name,
+			isGSI:  true,
+		})
+	}
+
+	for _, lsi := range m.schema.LSI {
+		m.indexOptions = append(m.indexOptions, indexOption{
+			name:   lsi.IndexName,
+			label:  "LSI: " + lsi.IndexName,
+			pkName: m.schema.PrimaryKey.Name, // LSI uses table's PK
+			skName: lsi.RangeKey.Name,
+			isLSI:  true,
+		})
+	}
+}
+
+// getSelectedIndexOption returns the currently selected index option
+func (m TableBrowserModel) getSelectedIndexOption() indexOption {
+	for _, opt := range m.indexOptions {
+		if opt.name == m.selectedIndex {
+			return opt
+		}
+	}
+	// fallback to table
+	if len(m.indexOptions) > 0 {
+		return m.indexOptions[0]
+	}
+	return indexOption{label: "Table"}
 }

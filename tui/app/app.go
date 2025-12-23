@@ -125,7 +125,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.NavigateToTableMsg:
 		m.ctx.TableName = msg.TableName
 		m.currentView = ViewTableBrowser
-		m.tableBrowser = views.NewTableBrowserModel(m.client, msg.TableName)
+		m.tableBrowser = views.NewTableBrowserModel(m.client, msg.TableName, int(msg.InitialMode))
 		m.tableBrowser.SetSize(m.width, m.height-2)
 		m.statusbar.SetContext(m.ctx.Profile, m.ctx.Region, msg.TableName)
 		m.statusbar.SetBindings(components.BrowserBindings())
@@ -205,6 +205,9 @@ func (m Model) currentViewName() string {
 	case ViewTablesList:
 		return "tables"
 	case ViewTableBrowser:
+		if m.tableBrowser.IsInDescribeMode() {
+			return "browser_describe"
+		}
 		if m.tableBrowser.IsInQueryInput() {
 			return "browser_query"
 		}
