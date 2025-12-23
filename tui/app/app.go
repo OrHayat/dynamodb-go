@@ -125,7 +125,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.NavigateToTableMsg:
 		m.ctx.TableName = msg.TableName
 		m.currentView = ViewTableBrowser
-		m.tableBrowser = views.NewTableBrowserModel(m.client, msg.TableName, int(msg.InitialMode))
+		m.tableBrowser = views.NewTableBrowserModel(m.client, m.logger, msg.TableName, int(msg.InitialMode))
 		m.tableBrowser.SetSize(m.width, m.height-2)
 		m.statusbar.SetContext(m.ctx.Profile, m.ctx.Region, msg.TableName)
 		m.statusbar.SetBindings(components.BrowserBindings())
@@ -135,7 +135,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ctx.CurrentItem = msg.Item
 		m.ctx.ItemKey = msg.Key
 		m.currentView = ViewItemDetail
-		m.itemDetail = views.NewItemDetailModel(msg.Item, msg.Key)
+		m.itemDetail = views.NewItemDetailModel(msg.Item, msg.Key, msg.PkName, msg.SkName)
 		m.itemDetail.SetSize(m.width, m.height-2)
 		m.statusbar.SetBindings(components.DetailBindings())
 		return m, m.itemDetail.Init()

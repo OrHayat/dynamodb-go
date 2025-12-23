@@ -1,9 +1,12 @@
 package views
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +40,7 @@ type indexOption struct {
 // TableBrowserModel displays items in a table
 type TableBrowserModel struct {
 	client    *dynamo.Client
+	logger    *slog.Logger
 	tableName string
 	schema    *dbtable.TableDefinition
 
@@ -76,7 +80,7 @@ type TableBrowserModel struct {
 
 // NewTableBrowserModel creates a new table browser view
 // initialMode: 0=scan, 1=query, 2=describe (matches messages.TableMode)
-func NewTableBrowserModel(client *dynamo.Client, tableName string, initialMode int) TableBrowserModel {
+func NewTableBrowserModel(client *dynamo.Client, logger *slog.Logger, tableName string, initialMode int) TableBrowserModel {
 	pkInput := textinput.New()
 	pkInput.Placeholder = "Partition key value"
 	pkInput.Focus()
@@ -107,6 +111,7 @@ func NewTableBrowserModel(client *dynamo.Client, tableName string, initialMode i
 
 	return TableBrowserModel{
 		client:      client,
+		logger:      logger,
 		tableName:   tableName,
 		loading:     components.NewLoading("Loading table schema..."),
 		pkInput:     pkInput,
@@ -223,22 +228,34 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 
 		switch msg.String() {
 		case "enter":
-			if len(m.items) > 0 {
+			if len(m.items) > 0 && m.schema != nil {
 				idx := m.table.Cursor()
 				if idx < len(m.items) {
 					item := m.items[idx]
 					key := m.extractKey(item)
+					pkName := m.schema.PrimaryKey.Name
+					skName := m.schema.RangeKey.Name
 					return m, func() tea.Msg {
-						return messages.NavigateToItemMsg{Item: item, Key: key}
+						return messages.NavigateToItemMsg{Item: item, Key: key, PkName: pkName, SkName: skName}
 					}
 				}
 			}
 		case "ctrl+c":
-			// Copy all key values based on schema
+			// Copy whole item as JSON to clipboard + store all keys for internal paste
 			if len(m.items) > 0 && m.schema != nil {
 				idx := m.table.Cursor()
 				if idx < len(m.items) {
-					m.yankedKeys = m.extractAllKeys(m.items[idx])
+					item := m.items[idx]
+					// Copy whole item as JSON to clipboard
+					if jsonBytes, err := json.MarshalIndent(item, "", "  "); err == nil {
+						clipboard.WriteAll(string(jsonBytes))
+					}
+					// Store all keys (table + GSI + LSI) for internal paste
+					m.yankedKeys = m.extractAllKeys(item)
+					// Debug log
+					if m.logger != nil {
+						m.logger.Debug("ctrl+c yankedKeys", "keys", m.yankedKeys)
+					}
 				}
 			}
 		case "n":
@@ -476,6 +493,19 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 			} else if opt.isLSI {
 				pkKey = "table_pk" // LSI uses table's PK
 				skKey = fmt.Sprintf("lsi_%s_sk", opt.name)
+			}
+
+			// Debug log
+			if m.logger != nil {
+				m.logger.Debug("ctrl+v paste",
+					"index", opt.name,
+					"isGSI", opt.isGSI,
+					"isLSI", opt.isLSI,
+					"focused", m.inputFocused,
+					"pkKey", pkKey,
+					"skKey", skKey,
+					"yankedKeys", m.yankedKeys,
+				)
 			}
 
 			if m.inputFocused == 1 {

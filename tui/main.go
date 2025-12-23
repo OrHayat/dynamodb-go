@@ -48,13 +48,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create DynamoDB client
-	client, err := dynamo.NewClient(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating DynamoDB client: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Determine region for display
 	region := cfg.Region
 	if region == "" {
@@ -69,6 +62,13 @@ func main() {
 	}
 	defer logFile.Close()
 	logger := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Create DynamoDB client with logger
+	client, err := dynamo.NewClient(cfg, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating DynamoDB client: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Create and run app
 	appModel := app.New(client, logger, profile, region)

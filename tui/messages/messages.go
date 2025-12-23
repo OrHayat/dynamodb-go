@@ -19,8 +19,10 @@ type NavigateToTableMsg struct {
 
 // NavigateToItemMsg tells the app to navigate to item detail
 type NavigateToItemMsg struct {
-	Item map[string]any
-	Key  table.Key
+	Item   map[string]any
+	Key    table.Key
+	PkName string // partition key attribute name
+	SkName string // sort key attribute name (empty if none)
 }
 
 // NavigateBackMsg tells the app to go back to previous view

@@ -2,6 +2,7 @@ package dynamo
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -14,10 +15,11 @@ import (
 type Client struct {
 	db     *dynamodb.Client
 	client *table.Client
+	logger *slog.Logger
 }
 
 // NewClient creates a new TUI DynamoDB client
-func NewClient(cfg aws.Config) (*Client, error) {
+func NewClient(cfg aws.Config, logger *slog.Logger) (*Client, error) {
 	db := dynamodb.NewFromConfig(cfg)
 	client, err := table.NewClient(db, nil, nil)
 	if err != nil {
@@ -26,6 +28,7 @@ func NewClient(cfg aws.Config) (*Client, error) {
 	return &Client{
 		db:     db,
 		client: client,
+		logger: logger,
 	}, nil
 }
 
@@ -93,9 +96,23 @@ func (c *Client) ScanCmd(tableSchema *table.TableDefinition, input table.ScanInp
 // QueryCmd returns a tea.Cmd that queries items from a table
 func (c *Client) QueryCmd(tableSchema *table.TableDefinition, input table.QueryInput) tea.Cmd {
 	return func() tea.Msg {
+		if c.logger != nil {
+			c.logger.Debug("QueryCmd",
+				"table", tableSchema.Name,
+				"index", input.Index,
+				"pk", input.Key.PK,
+				"sk", input.Key.SK,
+				"limit", input.Limit,
+				"table_pk", tableSchema.PrimaryKey.Name,
+				"table_sk", tableSchema.RangeKey.Name,
+			)
+		}
 		var items []map[string]any
 		nextPage, err := table.Query(context.Background(), c.client, tableSchema, input, &items)
 		if err != nil {
+			if c.logger != nil {
+				c.logger.Error("QueryCmd failed", "error", err)
+			}
 			return ErrorMsg{Err: err, Operation: "Query", Table: tableSchema.Name}
 		}
 

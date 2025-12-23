@@ -124,7 +124,7 @@ func FullBindingsForView(view string) ([]KeyBinding, string) {
 			{Key: "d", Desc: "Describe table info"},
 			{Key: "f", Desc: "Find/query mode"},
 			{Key: "s", Desc: "Switch to scan mode"},
-			{Key: "ctrl+c", Desc: "Copy keys from current item"},
+			{Key: "ctrl+c", Desc: "Copy item as JSON to clipboard"},
 			{Key: "enter", Desc: "View item details"},
 			{Key: "q / esc", Desc: "Back to tables list"},
 			{Key: "ctrl+q", Desc: "Quit"},
@@ -147,7 +147,7 @@ func FullBindingsForView(view string) ([]KeyBinding, string) {
 			{Key: "u", Desc: "Scroll half page up"},
 			{Key: "g", Desc: "Go to top"},
 			{Key: "G", Desc: "Go to bottom"},
-			{Key: "y", Desc: "Copy JSON to clipboard"},
+			{Key: "ctrl+c", Desc: "Copy item as JSON to clipboard"},
 			{Key: "q / esc", Desc: "Back to browser"},
 			{Key: "ctrl+q", Desc: "Quit"},
 		}, "Item Detail"

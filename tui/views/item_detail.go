@@ -16,6 +16,8 @@ import (
 type ItemDetailModel struct {
 	item       map[string]any
 	key        table.Key
+	pkName     string // partition key attribute name
+	skName     string // sort key attribute name
 	jsonString string
 	viewport   viewport.Model
 	copied     bool
@@ -25,13 +27,15 @@ type ItemDetailModel struct {
 }
 
 // NewItemDetailModel creates a new item detail view
-func NewItemDetailModel(item map[string]any, key table.Key) ItemDetailModel {
+func NewItemDetailModel(item map[string]any, key table.Key, pkName, skName string) ItemDetailModel {
 	jsonBytes, _ := json.MarshalIndent(item, "", "  ")
 	jsonStr := string(jsonBytes)
 
 	return ItemDetailModel{
 		item:       item,
 		key:        key,
+		pkName:     pkName,
+		skName:     skName,
 		jsonString: jsonStr,
 	}
 }
@@ -60,8 +64,8 @@ func (m ItemDetailModel) Update(msg tea.Msg) (ItemDetailModel, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "q":
 			return m, func() tea.Msg { return messages.NavigateBackMsg{} }
-		case "y":
-			// Copy to clipboard
+		case "ctrl+c":
+			// Copy whole item as JSON to clipboard
 			if err := clipboard.WriteAll(m.jsonString); err == nil {
 				m.copied = true
 			}
