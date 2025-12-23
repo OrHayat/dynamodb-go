@@ -408,15 +408,50 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 		return m.handleIndexDropdown(msg)
 	}
 
-	switch key {
-	case "esc":
-		// Go back to previous mode (or Tables List if came from there)
-		if m.previousMode == modeLoading {
-			return m, func() tea.Msg { return messages.NavigateBackMsg{} }
+	// When typing in PK/SK fields, only esc works as special key
+	if m.inputFocused == 1 || m.inputFocused == 2 {
+		if key == "esc" {
+			// Go back to index row
+			m.pkInput.Blur()
+			m.skInput.Blur()
+			m.inputFocused = 0
+			return m, nil
 		}
-		m.mode = m.previousMode
-		return m, nil
+		// All other keys go to text input (handled at end of function)
+	}
 
+	// Index row (inputFocused == 0) - navigation keys work
+	if m.inputFocused == 0 {
+		switch key {
+		case "esc", "q":
+			// Go back to tables list
+			return m, func() tea.Msg { return messages.NavigateBackMsg{} }
+		case "s":
+			// Switch to scan mode
+			if m.schema != nil {
+				m.mode = modeScan
+				m.err = nil
+				m.pageHistory = nil
+				m.columnOffset = 0
+				m.selectedIndex = ""
+				m.loading.SetMessage("Scanning items...")
+				m.items = nil
+				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+			}
+			return m, nil
+		case "d":
+			// Switch to describe mode
+			m.mode = modeDescribe
+			return m, nil
+		case "f":
+			// Focus PK input
+			m.inputFocused = 1
+			m.pkInput.Focus()
+			return m, textinput.Blink
+		}
+	}
+
+	switch key {
 	case "tab":
 		// Cycle forward: index -> pk -> sk -> index
 		m.pkInput.Blur()

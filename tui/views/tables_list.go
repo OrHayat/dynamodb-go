@@ -1,6 +1,8 @@
 package views
 
 import (
+	"fmt"
+
 	"github.com/orhayat/dynamodb-go/tui/components"
 	"github.com/orhayat/dynamodb-go/tui/dynamo"
 	"github.com/orhayat/dynamodb-go/tui/messages"
@@ -166,12 +168,10 @@ func (m TablesListModel) View() string {
 		s += cursor + tableName + "\n"
 	}
 
-	// Show scroll indicator if needed
-	if len(m.tables) > visibleItems {
-		s += "\n" + components.MutedStyle.Render(
-			"Showing "+string(rune('0'+start+1))+"-"+string(rune('0'+end))+" of "+string(rune('0'+len(m.tables))),
-		)
-	}
+	// Show position indicator
+	s += "\n" + components.MutedStyle.Render(
+		fmt.Sprintf("%d of %d tables", m.cursor+1, len(m.tables)),
+	)
 
 	return components.Container.Render(s)
 }

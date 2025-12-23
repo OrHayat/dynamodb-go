@@ -46,12 +46,16 @@ func (h HelpOverlay) View() string {
 
 	content := strings.Join(rows, "\n")
 
-	// Box style
+	// Box style - adaptive background
+	boxBg := lipgloss.Color("#1a1a2e") // dark mode
+	if !IsDarkBackground {
+		boxBg = lipgloss.Color("#FFFFFF") // light mode: white
+	}
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(Primary).
 		Padding(1, 2).
-		Background(lipgloss.Color("#1a1a2e"))
+		Background(boxBg)
 
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).

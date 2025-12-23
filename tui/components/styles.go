@@ -2,17 +2,32 @@ package components
 
 import "github.com/charmbracelet/lipgloss"
 
-// Colors
+// Theme detection
+var IsDarkBackground = lipgloss.HasDarkBackground()
+
+// Colors - adaptive based on terminal background
 var (
 	Primary   = lipgloss.Color("#7D56F4")
-	Secondary = lipgloss.Color("#6C757D")
+	Secondary = adaptiveColor("#6C757D", "#5A6268")
 	Success   = lipgloss.Color("#28A745")
 	Error     = lipgloss.Color("#DC3545")
 	Warning   = lipgloss.Color("#FFC107")
-	Muted     = lipgloss.Color("#6C757D")
+	Muted     = adaptiveColor("#6C757D", "#495057")
 	Light     = lipgloss.Color("#F8F9FA")
 	Dark      = lipgloss.Color("#343A40")
+
+	// Text colors that adapt to background
+	TextPrimary   = adaptiveColor("#FFFFFF", "#212529")
+	TextSecondary = adaptiveColor("#ADB5BD", "#495057")
 )
+
+// adaptiveColor returns dark theme color if dark background, light theme color otherwise
+func adaptiveColor(darkTheme, lightTheme string) lipgloss.Color {
+	if IsDarkBackground {
+		return lipgloss.Color(darkTheme)
+	}
+	return lipgloss.Color(lightTheme)
+}
 
 // Base styles
 var (
@@ -74,8 +89,8 @@ var (
 			Padding(1, 2)
 
 	StatusBarStyle = lipgloss.NewStyle().
-			Foreground(Light).
-			Background(Dark).
+			Foreground(statusBarFg()).
+			Background(statusBarBg()).
 			Padding(0, 1)
 
 	HelpKey = lipgloss.NewStyle().
@@ -84,4 +99,26 @@ var (
 
 	HelpDesc = lipgloss.NewStyle().
 			Foreground(Muted)
+
+	// Status bar specific styles (always visible on dark bg)
+	StatusBarKey = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#7D56F4")).
+			Bold(true)
+
+	StatusBarDesc = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#ADB5BD"))
 )
+
+func statusBarFg() lipgloss.Color {
+	if IsDarkBackground {
+		return Light // white text on dark bg
+	}
+	return Light // white text on dark bg (inverted for light terminals)
+}
+
+func statusBarBg() lipgloss.Color {
+	if IsDarkBackground {
+		return Dark // dark background
+	}
+	return lipgloss.Color("#343A40") // dark background (inverted for light terminals)
+}

@@ -61,8 +61,7 @@ func (s StatusBar) View() string {
 	// Keybindings section (right side)
 	var bindingParts []string
 	for _, b := range s.bindings {
-		bindingParts = append(bindingParts,
-			HelpKey.Render(b.Key)+" "+HelpDesc.Render(b.Desc))
+		bindingParts = append(bindingParts, b.Key+" "+b.Desc)
 	}
 	bindings := strings.Join(bindingParts, "  ")
 
