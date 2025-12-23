@@ -2,7 +2,6 @@ package table
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -26,35 +25,47 @@ func DescribeTable(
 		return TableDefinition{}, nil, err
 	}
 	tableDescription = response.Table
-	tableSchema.Billing.BillingMode = tableDescription.BillingModeSummary.BillingMode
-	switch tableDescription.BillingModeSummary.BillingMode {
-	case types.BillingModeProvisioned:
-		desc := tableDescription.ProvisionedThroughput
-		tableSchema.Billing.ProvisionedThroughput = &types.ProvisionedThroughput{
-			ReadCapacityUnits:  desc.ReadCapacityUnits,
-			WriteCapacityUnits: desc.WriteCapacityUnits,
-		}
-	case types.BillingModePayPerRequest:
-		desc := tableDescription.OnDemandThroughput
-		tableSchema.Billing.OnDemandThroughput = &types.OnDemandThroughput{
-			MaxReadRequestUnits:  desc.MaxReadRequestUnits,
-			MaxWriteRequestUnits: desc.MaxWriteRequestUnits,
+
+	// Handle billing info (may be nil for older tables or certain configurations)
+	if tableDescription.BillingModeSummary != nil {
+		tableSchema.Billing.BillingMode = tableDescription.BillingModeSummary.BillingMode
+		switch tableDescription.BillingModeSummary.BillingMode {
+		case types.BillingModeProvisioned:
+			if desc := tableDescription.ProvisionedThroughput; desc != nil {
+				tableSchema.Billing.ProvisionedThroughput = &types.ProvisionedThroughput{
+					ReadCapacityUnits:  desc.ReadCapacityUnits,
+					WriteCapacityUnits: desc.WriteCapacityUnits,
+				}
+			}
+		case types.BillingModePayPerRequest:
+			if desc := tableDescription.OnDemandThroughput; desc != nil {
+				tableSchema.Billing.OnDemandThroughput = &types.OnDemandThroughput{
+					MaxReadRequestUnits:  desc.MaxReadRequestUnits,
+					MaxWriteRequestUnits: desc.MaxWriteRequestUnits,
+				}
+			}
 		}
 	}
 	tableSchema.Name = aws.ToString(tableDescription.TableName)
 
+	// Build map of attribute name -> scalar type from AttributeDefinitions
+	attrTypes := make(map[string]types.ScalarAttributeType)
+	for _, attr := range tableDescription.AttributeDefinitions {
+		attrTypes[aws.ToString(attr.AttributeName)] = attr.AttributeType
+	}
+
 	for _, key := range tableDescription.KeySchema {
-		// key.KeyType == types.KeyTypeHash
+		attrName := aws.ToString(key.AttributeName)
 		switch key.KeyType {
 		case types.KeyTypeHash:
 			tableSchema.PrimaryKey = AttributeDefinition{
-				Name: aws.ToString(key.AttributeName),
-				Type: types.ScalarAttributeType(key.KeyType),
+				Name: attrName,
+				Type: attrTypes[attrName],
 			}
 		case types.KeyTypeRange:
 			tableSchema.RangeKey = AttributeDefinition{
-				Name: aws.ToString(key.AttributeName),
-				Type: types.ScalarAttributeType(key.KeyType),
+				Name: attrName,
+				Type: attrTypes[attrName],
 			}
 		}
 	}
@@ -63,16 +74,17 @@ func DescribeTable(
 			IndexName: aws.ToString(gsi.IndexName),
 		}
 		for _, key := range gsi.KeySchema {
+			attrName := aws.ToString(key.AttributeName)
 			switch key.KeyType {
 			case types.KeyTypeHash:
 				curr.PrimaryKey = AttributeDefinition{
-					Name: aws.ToString(key.AttributeName),
-					Type: types.ScalarAttributeType(key.KeyType),
+					Name: attrName,
+					Type: attrTypes[attrName],
 				}
 			case types.KeyTypeRange:
 				curr.RangeKey = AttributeDefinition{
-					Name: aws.ToString(key.AttributeName),
-					Type: types.ScalarAttributeType(key.KeyType),
+					Name: attrName,
+					Type: attrTypes[attrName],
 				}
 			}
 		}
@@ -84,20 +96,18 @@ func DescribeTable(
 			IndexName: aws.ToString(lsi.IndexName),
 		}
 		for _, key := range lsi.KeySchema {
+			attrName := aws.ToString(key.AttributeName)
 			switch key.KeyType {
 			case types.KeyTypeHash:
-				return TableDefinition{}, tableDescription, fmt.Errorf("unepected output from describe table - lsi %s has primary key", aws.ToString(lsi.IndexName))
+				// Skip - LSI inherits partition key from table
+				continue
 			case types.KeyTypeRange:
 				curr.RangeKey = AttributeDefinition{
-					Name: aws.ToString(key.AttributeName),
-					Type: types.ScalarAttributeType(key.KeyType),
+					Name: attrName,
+					Type: attrTypes[attrName],
 				}
 			}
 		}
-		// lsi.Projection
-		//arn
-		// _ = lsi.IndexArn
-		// _ = lsi.Projection
 		tableSchema.LSI = append(tableSchema.LSI, curr)
 	}
 

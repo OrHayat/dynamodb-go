@@ -54,7 +54,8 @@ func prepareDeleteItemRequest(
 }
 
 type DeleteItemInput struct {
-	Key Key //key of deleted item
+	//key of deleted item
+	Key Key
 	//additional conditions that can be used to limit the delete item operation
 	ConditionalCheck expression.ConditionBuilder
 }

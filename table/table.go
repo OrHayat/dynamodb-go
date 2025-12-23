@@ -37,6 +37,11 @@ func NewPaginationKey(key Key) PaginationKey {
 	}
 }
 
+// HasMore returns true if there are more pages to fetch
+func (p PaginationKey) HasMore() bool {
+	return len(p.encodedKey) > 0 || p.useUserKey
+}
+
 type Billing struct {
 	BillingMode           types.BillingMode
 	ProvisionedThroughput *types.ProvisionedThroughput //only for PROVISIONED mode

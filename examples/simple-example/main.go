@@ -282,17 +282,23 @@ func (cli *GetAnimalTable) Run(ctx context.Context, logger *slog.Logger, client 
 	typ := strings.ToLower(cli.AnimalType)
 	res := s_schemaRegistry.GetScehma(typ)
 	key := table.Key{PK: cli.AnimalType, SK: cli.Name}
-	err = table.GetItem(ctx, client, &s_animalTable, key, &res)
+	err = table.GetItem(ctx, client, &s_animalTable, table.GetItemInput{
+		Key: key,
+	}, &res)
 	if err != nil {
 		return fmt.Errorf("failed to get item from schema:%w", err)
 	}
 	logger.InfoContext(ctx, "fetched animal from db as generic animal", "animal", res)
-	asGeneric, err := table.GetItemOf[GenericAnimal](ctx, client, &s_animalTable, key)
+	asGeneric, err := table.GetItemOf[GenericAnimal](ctx, client, &s_animalTable, table.GetItemInput{
+		Key: key,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to get item of GenericAnimal:%w", err)
 	}
 	logger.InfoContext(ctx, "fetched animal from db as generic animal", "animal", asGeneric)
-	asJson, err := table.GetAsJSON(ctx, client, &s_animalTable, key)
+	asJson, err := table.GetAsJSON(ctx, client, &s_animalTable, table.GetItemInput{
+		Key: key,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to get item as any type:%w", err)
 	}
@@ -306,7 +312,9 @@ type DeleteAnimalTableItem struct {
 
 func (cli *DeleteAnimalTableItem) Run(ctx context.Context, logger *slog.Logger, client *table.Client) error {
 	key := table.Key{PK: cli.AnimalType, SK: cli.Name}
-	err := table.DeleteItem(ctx, client, &s_animalTable, key)
+	err := table.DeleteItem(ctx, client, &s_animalTable, table.DeleteItemInput{
+		Key: key,
+	})
 	if err != nil {
 		return err
 	}
@@ -326,7 +334,9 @@ func (cli *BatchReadLocks) Run(ctx context.Context, logger *slog.Logger, client 
 	for _, item := range cli.Items {
 		keys = append(keys, table.Key{PK: item})
 	}
-	res, err := table.BatchGetItemsFromSingleTable[lock](ctx, client, &s_locksTable, keys)
+	res, err := table.BatchGetItemsFromSingleTable[lock](ctx, client, &s_locksTable, table.BatchGetSingleTableInput{
+		Keys: keys,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to batch get items from single table: %w", err)
 	}

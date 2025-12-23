@@ -43,7 +43,7 @@ func prepareScanRequest(
 	input ScanInput,
 ) (*dynamodb.ScanInput, error) {
 
-	startScanFrom, err := input.paginationKey.resolveExclusiveStartKey(table, input.Index)
+	startScanFrom, err := input.PaginationKey.resolveExclusiveStartKey(table, input.Index)
 	if err != nil {
 		return nil, &OperationError{
 			operation:   "scan prepare",
@@ -86,7 +86,7 @@ func prepareScanRequest(
 
 type ScanInput struct {
 	Index                string        //pass empty string to scan main table
-	paginationKey        PaginationKey //pass empty struct to start from beginning of table/index
+	PaginationKey        PaginationKey //pass empty struct to start from beginning of table/index
 	ConsistentRead       aws.Ternary
 	FilterExpression     expression.ConditionBuilder
 	ProjectionExpression *expression.ProjectionBuilder

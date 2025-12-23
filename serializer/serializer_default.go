@@ -805,6 +805,8 @@ func makeMapSerializer(t reflect.Type) *serializer {
 				v := newAddressableValue(valType)
 
 				for key, val := range casted.Value {
+					k.SetZero()
+					v.SetZero()
 					err = keySerializer.unmarshal(key, k)
 					if err != nil {
 						return newUnMarshalError(
