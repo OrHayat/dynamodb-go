@@ -15,8 +15,10 @@ import (
 )
 
 var (
-	profileFlag = flag.String("profile", "", "AWS profile to use (default: uses AWS_PROFILE env var or 'default')")
-	regionFlag  = flag.String("region", "", "AWS region (default: uses AWS_REGION env var or profile's region)")
+	profileFlag  = flag.String("profile", "", "AWS profile to use (default: uses AWS_PROFILE env var or 'default')")
+	regionFlag   = flag.String("region", "", "AWS region (default: uses AWS_REGION env var or profile's region)")
+	logPathFlag  = flag.String("log-path", "", "Path to log file (default: no logging)")
+	logLevelFlag = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 )
 
 func main() {
@@ -55,13 +57,21 @@ func main() {
 	}
 
 	// Setup logger
-	logFile, err := os.OpenFile("/tmp/tui-debug.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating log file: %v\n", err)
-		os.Exit(1)
+	var logger *slog.Logger
+	if *logPathFlag != "" {
+		logFile, err := os.OpenFile(*logPathFlag, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating log file: %v\n", err)
+			os.Exit(1)
+		}
+		defer logFile.Close()
+
+		level := parseLogLevel(*logLevelFlag)
+		logger = slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: level}))
+	} else {
+		// No logging
+		logger = slog.New(slog.DiscardHandler)
 	}
-	defer logFile.Close()
-	logger := slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Create DynamoDB client with logger
 	client, err := dynamo.NewClient(cfg, logger)
@@ -77,5 +87,20 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func parseLogLevel(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }

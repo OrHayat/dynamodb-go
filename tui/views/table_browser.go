@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/atotto/clipboard"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,6 +36,23 @@ type indexOption struct {
 	skName string // sort key attribute name (empty if none)
 	isGSI  bool
 	isLSI  bool
+}
+
+// filterOperator represents a filter comparison operator
+type filterOperator struct {
+	symbol string // display symbol
+	label  string // full name for help
+}
+
+var filterOperators = []filterOperator{
+	{"=", "equals"},
+	{"<>", "not equals"},
+	{"<", "less than"},
+	{">", "greater than"},
+	{"<=", "less or equal"},
+	{">=", "greater or equal"},
+	{"begins_with", "begins with"},
+	{"contains", "contains"},
 }
 
 // TableBrowserModel displays items in a table
@@ -68,6 +86,14 @@ type TableBrowserModel struct {
 	// Yanked key values from selected row
 	yankedKeys map[string]string // e.g. "table_pk", "table_sk", "gsi_MyIndex_pk", "lsi_MyLSI_sk"
 
+	// Filter input
+	filterField       components.Autocomplete
+	filterValue       textinput.Model
+	filterOpIdx       int  // index into filterOperators
+	showFilterOpDrop  bool // show operator dropdown
+	showFilter        bool // filter row visible in scan mode
+	filterInputFocus  int  // 0=field, 1=operator, 2=value
+
 	loading      components.Loading
 	err          error
 	pendingMode  int         // mode to switch to after schema loads (0=scan, 1=query, 2=describe)
@@ -87,6 +113,11 @@ func NewTableBrowserModel(client *dynamo.Client, logger *slog.Logger, tableName 
 
 	skInput := textinput.New()
 	skInput.Placeholder = "Sort key value (optional)"
+
+	// Initialize filter components
+	filterField := components.NewAutocomplete("field name")
+	filterValue := textinput.New()
+	filterValue.Placeholder = "value"
 
 	// Initialize empty table
 	t := table.New(
@@ -116,6 +147,8 @@ func NewTableBrowserModel(client *dynamo.Client, logger *slog.Logger, tableName 
 		loading:     components.NewLoading("Loading table schema..."),
 		pkInput:     pkInput,
 		skInput:     skInput,
+		filterField: filterField,
+		filterValue: filterValue,
 		table:       t,
 		pendingMode: initialMode,
 	}
@@ -127,6 +160,8 @@ func (m *TableBrowserModel) SetSize(width, height int) {
 	m.height = height
 	m.pkInput.Width = width - 20
 	m.skInput.Width = width - 20
+	m.filterField.SetWidth(20)
+	m.filterValue.Width = width - 50 // leave room for field + operator
 	// Reserve space for header, info line, help text
 	tableHeight := height - 12
 	if tableHeight < 5 {
@@ -184,6 +219,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 		m.hasNextPage = msg.HasNextPage
 		m.extractColumns()
 		m.buildTable()
+		m.updateFilterSuggestions()
 		m.err = nil
 
 	case dynamo.ErrorMsg:
@@ -193,6 +229,11 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 		// Handle query input mode
 		if m.mode == modeQueryInput {
 			return m.handleQueryInput(msg)
+		}
+
+		// Handle scan filter input when filter is visible
+		if m.mode == modeScan && m.showFilter {
+			return m.handleScanFilterInput(msg)
 		}
 
 		// Handle describe table menu
@@ -266,17 +307,25 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				m.loading.SetMessage("Loading next page...")
 				m.items = nil
 				if m.mode == modeQuery {
-					return m, m.client.QueryCmd(m.schema, dbtable.QueryInput{
+					input := dbtable.QueryInput{
 						Key:           dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
 						Index:         m.selectedIndex,
 						PaginationKey: m.currentStartKey,
 						Limit:         50,
-					})
+					}
+					if m.hasActiveFilter() {
+						input.FilterExpression = m.buildFilterExpression()
+					}
+					return m, m.client.QueryCmd(m.schema, input)
 				}
-				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{
+				input := dbtable.ScanInput{
 					PaginationKey: m.currentStartKey,
 					Limit:         50,
-				})
+				}
+				if m.hasActiveFilter() {
+					input.FilterExpression = m.buildFilterExpression()
+				}
+				return m, m.client.ScanCmd(m.schema, input)
 			}
 		case "p":
 			// Previous page
@@ -286,25 +335,41 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				m.loading.SetMessage("Loading previous page...")
 				m.items = nil
 				if m.mode == modeQuery {
-					return m, m.client.QueryCmd(m.schema, dbtable.QueryInput{
+					input := dbtable.QueryInput{
 						Key:           dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
 						Index:         m.selectedIndex,
 						PaginationKey: m.currentStartKey,
 						Limit:         50,
-					})
+					}
+					if m.hasActiveFilter() {
+						input.FilterExpression = m.buildFilterExpression()
+					}
+					return m, m.client.QueryCmd(m.schema, input)
 				}
-				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{
+				input := dbtable.ScanInput{
 					PaginationKey: m.currentStartKey,
 					Limit:         50,
-				})
+				}
+				if m.hasActiveFilter() {
+					input.FilterExpression = m.buildFilterExpression()
+				}
+				return m, m.client.ScanCmd(m.schema, input)
 			}
+		case "/":
+			// Toggle filter in scan mode
+			if m.mode == modeScan {
+				m.showFilter = true
+				m.filterInputFocus = 0
+				return m, m.filterField.Focus()
+			}
+			return m, nil
 		case "f":
 			// Enter query/find mode from SCAN or QUERY RESULTS
 			m.previousMode = m.mode
 			m.mode = modeQueryInput
 			m.inputFocused = 0 // Start on index row
-			m.pkInput.Blur()
-			m.skInput.Blur()
+			m.showFilter = false
+			m.blurAllInputs()
 			// Reset to table if no selection
 			if m.selectedIndex == "" && len(m.indexOptions) > 0 {
 				opt := m.indexOptions[0]
@@ -324,6 +389,8 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				m.pageHistory = nil
 				m.columnOffset = 0
 				m.selectedIndex = "" // Reset to table
+				m.showFilter = false
+				m.blurAllInputs()
 				m.loading.SetMessage("Scanning items...")
 				m.items = nil
 				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
@@ -332,6 +399,8 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 			// Show describe/table info
 			if m.schema != nil {
 				m.mode = modeDescribe
+				m.showFilter = false
+				m.blurAllInputs()
 				return m, nil
 			}
 		case "q", "esc":
@@ -340,8 +409,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				m.previousMode = modeQuery
 				m.mode = modeQueryInput
 				m.inputFocused = 0
-				m.pkInput.Blur()
-				m.skInput.Blur()
+				m.blurAllInputs()
 				return m, nil
 			}
 			// SCAN → go back to Tables List
@@ -374,13 +442,21 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				m.columnOffset = 0
 				m.currentStartKey = dbtable.PaginationKey{}
 				if m.mode == modeQuery {
-					return m, m.client.QueryCmd(m.schema, dbtable.QueryInput{
+					input := dbtable.QueryInput{
 						Key:   dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
 						Index: m.selectedIndex,
 						Limit: 50,
-					})
+					}
+					if m.hasActiveFilter() {
+						input.FilterExpression = m.buildFilterExpression()
+					}
+					return m, m.client.QueryCmd(m.schema, input)
 				}
-				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+				input := dbtable.ScanInput{Limit: 50}
+				if m.hasActiveFilter() {
+					input.FilterExpression = m.buildFilterExpression()
+				}
+				return m, m.client.ScanCmd(m.schema, input)
 			}
 		default:
 			// Let table handle navigation (j/k/up/down/etc)
@@ -408,6 +484,11 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 		return m.handleIndexDropdown(msg)
 	}
 
+	// Handle filter operator dropdown
+	if m.showFilterOpDrop {
+		return m.handleFilterOpDropdown(msg)
+	}
+
 	// When typing in PK/SK fields, only esc works as special key
 	if m.inputFocused == 1 || m.inputFocused == 2 {
 		if key == "esc" {
@@ -418,6 +499,11 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 			return m, nil
 		}
 		// All other keys go to text input (handled at end of function)
+	}
+
+	// Handle filter row input
+	if m.inputFocused == 3 {
+		return m.handleFilterInput(msg)
 	}
 
 	// Index row (inputFocused == 0) - navigation keys work
@@ -453,55 +539,32 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 
 	switch key {
 	case "tab":
-		// Cycle forward: index -> pk -> sk -> index
-		m.pkInput.Blur()
-		m.skInput.Blur()
-		m.inputFocused = (m.inputFocused + 1) % 3
-		if m.inputFocused == 1 {
-			m.pkInput.Focus()
-		} else if m.inputFocused == 2 {
-			m.skInput.Focus()
-		}
-		return m, textinput.Blink
+		// Cycle forward: index -> pk -> sk -> filter -> index
+		m.blurAllInputs()
+		m.inputFocused = (m.inputFocused + 1) % 4
+		return m, m.focusCurrentInput()
 
 	case "shift+tab":
-		// Cycle backward: sk -> pk -> index -> sk
-		m.pkInput.Blur()
-		m.skInput.Blur()
-		m.inputFocused = (m.inputFocused + 2) % 3 // +2 is same as -1 mod 3
-		if m.inputFocused == 1 {
-			m.pkInput.Focus()
-		} else if m.inputFocused == 2 {
-			m.skInput.Focus()
-		}
-		return m, textinput.Blink
+		// Cycle backward: filter -> sk -> pk -> index -> filter
+		m.blurAllInputs()
+		m.inputFocused = (m.inputFocused + 3) % 4 // +3 is same as -1 mod 4
+		return m, m.focusCurrentInput()
 
 	case "down":
 		// Move down through rows
-		if m.inputFocused < 2 {
-			m.pkInput.Blur()
-			m.skInput.Blur()
+		if m.inputFocused < 3 {
+			m.blurAllInputs()
 			m.inputFocused++
-			if m.inputFocused == 1 {
-				m.pkInput.Focus()
-			} else if m.inputFocused == 2 {
-				m.skInput.Focus()
-			}
-			return m, textinput.Blink
+			return m, m.focusCurrentInput()
 		}
 		return m, nil
 
 	case "up":
 		// Move up through rows
 		if m.inputFocused > 0 {
-			m.pkInput.Blur()
-			m.skInput.Blur()
+			m.blurAllInputs()
 			m.inputFocused--
-			if m.inputFocused == 1 {
-				m.pkInput.Focus()
-			}
-			// inputFocused == 0 means index row, no text input focused
-			return m, textinput.Blink
+			return m, m.focusCurrentInput()
 		}
 		return m, nil
 
@@ -587,6 +650,10 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 		if m.skInput.Value() != "" {
 			input.Key.SK = m.skInput.Value()
 		}
+		// Add filter if set
+		if m.hasActiveFilter() {
+			input.FilterExpression = m.buildFilterExpression()
+		}
 		return m, m.client.QueryCmd(m.schema, input)
 	}
 
@@ -633,6 +700,83 @@ func (m TableBrowserModel) renderIndexDropdown() string {
 	return s.String()
 }
 
+// renderFilterRow renders the filter input row
+func (m TableBrowserModel) renderFilterRow(focused bool) string {
+	var s strings.Builder
+
+	// Label
+	filterLabel := "Filter:        "
+	if focused {
+		filterLabel = components.HelpKey.Render("Filter:        ")
+	}
+	s.WriteString(filterLabel)
+
+	// Field autocomplete
+	fieldStyle := components.MutedStyle
+	if focused && m.filterInputFocus == 0 {
+		fieldStyle = lipgloss.NewStyle().Foreground(components.Primary)
+	}
+	fieldView := m.filterField.View()
+	// Only show dropdown part if focused on field
+	if focused && m.filterInputFocus == 0 && m.filterField.DropdownVisible() {
+		s.WriteString(fieldView + "\n")
+		return s.String() // dropdown takes over
+	}
+	// Just show the text input part (first line)
+	fieldLines := strings.Split(fieldView, "\n")
+	s.WriteString(fieldStyle.Render(fieldLines[0]))
+
+	// Operator
+	s.WriteString(" ")
+	opStyle := components.MutedStyle
+	if focused && m.filterInputFocus == 1 {
+		opStyle = lipgloss.NewStyle().Foreground(components.Primary).Bold(true)
+	}
+	opLabel := "[" + filterOperators[m.filterOpIdx].symbol + " ▼]"
+	s.WriteString(opStyle.Render(opLabel))
+
+	// Show operator dropdown if open
+	if m.showFilterOpDrop {
+		s.WriteString("\n")
+		s.WriteString(m.renderOperatorDropdown())
+		return s.String()
+	}
+
+	// Value
+	s.WriteString(" ")
+	valueStyle := components.MutedStyle
+	if focused && m.filterInputFocus == 2 {
+		valueStyle = lipgloss.NewStyle().Foreground(components.Primary)
+	}
+	_ = valueStyle // value input has its own styling
+	s.WriteString(m.filterValue.View())
+
+	s.WriteString("\n")
+	return s.String()
+}
+
+// renderOperatorDropdown renders the operator selection dropdown
+func (m TableBrowserModel) renderOperatorDropdown() string {
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(components.Primary).
+		Padding(0, 1).
+		MarginLeft(20)
+
+	var rows []string
+	for i, op := range filterOperators {
+		label := op.symbol + " (" + op.label + ")"
+		if i == m.filterOpIdx {
+			label = components.SelectedItem.Render("● " + label)
+		} else {
+			label = "  " + label
+		}
+		rows = append(rows, label)
+	}
+
+	return boxStyle.Render(strings.Join(rows, "\n")) + "\n"
+}
+
 func (m TableBrowserModel) handleIndexDropdown(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -672,6 +816,301 @@ func (m TableBrowserModel) handleIndexDropdown(msg tea.KeyMsg) (TableBrowserMode
 	}
 
 	return m, nil
+}
+
+// handleFilterOpDropdown handles keys when filter operator dropdown is open
+func (m TableBrowserModel) handleFilterOpDropdown(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.showFilterOpDrop = false
+		return m, nil
+
+	case "up", "k":
+		if m.filterOpIdx > 0 {
+			m.filterOpIdx--
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.filterOpIdx < len(filterOperators)-1 {
+			m.filterOpIdx++
+		}
+		return m, nil
+
+	case "enter":
+		m.showFilterOpDrop = false
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleFilterInput handles keys when filter row is focused
+func (m TableBrowserModel) handleFilterInput(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
+	key := msg.String()
+
+	// If autocomplete dropdown is visible, let it handle keys first
+	if m.filterInputFocus == 0 && m.filterField.DropdownVisible() {
+		switch key {
+		case "enter", "tab":
+			// Let autocomplete handle selection
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		case "up", "down":
+			// Let autocomplete handle navigation
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		case "esc":
+			// Close dropdown
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		}
+	}
+
+	switch key {
+	case "esc":
+		// Go back to index row
+		m.blurAllInputs()
+		m.inputFocused = 0
+		return m, nil
+
+	case "tab":
+		// Cycle within filter: field -> op -> value -> next row
+		m.filterField.Blur()
+		m.filterValue.Blur()
+		m.filterInputFocus = (m.filterInputFocus + 1) % 3
+		if m.filterInputFocus == 0 {
+			// Moved past value, go to next main row
+			m.inputFocused = 0
+			return m, nil
+		}
+		return m, m.focusFilterInput()
+
+	case "shift+tab":
+		// Cycle backward within filter
+		if m.filterInputFocus == 0 {
+			// At field, go to previous main row
+			m.blurAllInputs()
+			m.inputFocused = 2 // SK row
+			return m, m.focusCurrentInput()
+		}
+		m.filterField.Blur()
+		m.filterValue.Blur()
+		m.filterInputFocus--
+		return m, m.focusFilterInput()
+
+	case "left":
+		// Move left within filter fields
+		if m.filterInputFocus > 0 {
+			m.filterField.Blur()
+			m.filterValue.Blur()
+			m.filterInputFocus--
+			return m, m.focusFilterInput()
+		}
+		return m, nil
+
+	case "right":
+		// Move right within filter fields
+		if m.filterInputFocus < 2 {
+			m.filterField.Blur()
+			m.filterValue.Blur()
+			m.filterInputFocus++
+			return m, m.focusFilterInput()
+		}
+		return m, nil
+
+	case "up":
+		// Go to SK row
+		m.blurAllInputs()
+		m.inputFocused = 2
+		return m, m.focusCurrentInput()
+
+	case "down":
+		// If on field, open dropdown
+		if m.filterInputFocus == 0 {
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		}
+		return m, nil
+
+	case "enter":
+		// On operator, open dropdown
+		if m.filterInputFocus == 1 {
+			m.showFilterOpDrop = true
+			return m, nil
+		}
+		// On field or value, execute query (same as PK/SK enter)
+		if m.pkInput.Value() == "" {
+			return m, nil // PK is required
+		}
+		m.mode = modeQuery
+		m.pageHistory = nil
+		m.columnOffset = 0
+		m.currentStartKey = dbtable.PaginationKey{}
+		m.loading.SetMessage("Querying items...")
+		m.items = nil
+		input := dbtable.QueryInput{
+			Key:   dbtable.Key{PK: m.pkInput.Value()},
+			Index: m.selectedIndex,
+			Limit: 50,
+		}
+		if m.skInput.Value() != "" {
+			input.Key.SK = m.skInput.Value()
+		}
+		// Add filter if set
+		if m.hasActiveFilter() {
+			input.FilterExpression = m.buildFilterExpression()
+		}
+		return m, m.client.QueryCmd(m.schema, input)
+
+	case "ctrl+d":
+		// Clear filter
+		m.filterField.SetValue("")
+		m.filterValue.SetValue("")
+		m.filterOpIdx = 0
+		return m, nil
+	}
+
+	// Forward to focused filter component
+	var cmd tea.Cmd
+	if m.filterInputFocus == 0 {
+		m.filterField, cmd = m.filterField.Update(msg)
+	} else if m.filterInputFocus == 2 {
+		m.filterValue, cmd = m.filterValue.Update(msg)
+	}
+	return m, cmd
+}
+
+// blurAllInputs removes focus from all text inputs
+func (m *TableBrowserModel) blurAllInputs() {
+	m.pkInput.Blur()
+	m.skInput.Blur()
+	m.filterField.Blur()
+	m.filterValue.Blur()
+}
+
+// focusCurrentInput focuses the appropriate input for inputFocused state
+func (m *TableBrowserModel) focusCurrentInput() tea.Cmd {
+	switch m.inputFocused {
+	case 1:
+		return m.pkInput.Focus()
+	case 2:
+		return m.skInput.Focus()
+	case 3:
+		m.filterInputFocus = 0 // Start at field
+		return m.filterField.Focus()
+	}
+	return nil
+}
+
+// focusFilterInput focuses the appropriate filter sub-input
+func (m *TableBrowserModel) focusFilterInput() tea.Cmd {
+	switch m.filterInputFocus {
+	case 0:
+		return m.filterField.Focus()
+	case 2:
+		return m.filterValue.Focus()
+	}
+	return nil // operator doesn't need focus
+}
+
+// handleScanFilterInput handles keys when filter is visible in scan mode
+func (m TableBrowserModel) handleScanFilterInput(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
+	key := msg.String()
+
+	// Handle operator dropdown
+	if m.showFilterOpDrop {
+		return m.handleFilterOpDropdown(msg)
+	}
+
+	// If autocomplete dropdown is visible, let it handle keys first
+	if m.filterInputFocus == 0 && m.filterField.DropdownVisible() {
+		switch key {
+		case "enter", "tab":
+			// Let autocomplete handle selection
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		case "up", "down":
+			// Let autocomplete handle navigation
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		case "esc":
+			// Close dropdown
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		}
+	}
+
+	switch key {
+	case "esc":
+		// Close filter and return to table navigation
+		m.filterField.Blur()
+		m.filterValue.Blur()
+		m.showFilter = false
+		return m, nil
+
+	case "tab", "right":
+		// Cycle within filter: field -> op -> value
+		m.filterField.Blur()
+		m.filterValue.Blur()
+		m.filterInputFocus = (m.filterInputFocus + 1) % 3
+		return m, m.focusFilterInput()
+
+	case "shift+tab", "left":
+		// Cycle backward within filter
+		m.filterField.Blur()
+		m.filterValue.Blur()
+		m.filterInputFocus = (m.filterInputFocus + 2) % 3 // +2 is same as -1 mod 3
+		return m, m.focusFilterInput()
+
+	case "down":
+		// If on field, open dropdown
+		if m.filterInputFocus == 0 {
+			m.filterField, _ = m.filterField.Update(msg)
+			return m, nil
+		}
+		return m, nil
+
+	case "enter":
+		// On operator, open dropdown
+		if m.filterInputFocus == 1 {
+			m.showFilterOpDrop = true
+			return m, nil
+		}
+		// Execute scan with filter
+		if m.schema == nil {
+			return m, nil
+		}
+		m.filterField.Blur()
+		m.filterValue.Blur()
+		m.showFilter = false
+		m.pageHistory = nil
+		m.columnOffset = 0
+		m.currentStartKey = dbtable.PaginationKey{}
+		m.loading.SetMessage("Scanning with filter...")
+		m.items = nil
+		input := dbtable.ScanInput{Limit: 50}
+		if m.hasActiveFilter() {
+			input.FilterExpression = m.buildFilterExpression()
+		}
+		return m, m.client.ScanCmd(m.schema, input)
+
+	case "ctrl+d":
+		// Clear filter
+		m.filterField.SetValue("")
+		m.filterValue.SetValue("")
+		m.filterOpIdx = 0
+		return m, nil
+	}
+
+	// Forward to focused filter component
+	var cmd tea.Cmd
+	if m.filterInputFocus == 0 {
+		m.filterField, cmd = m.filterField.Update(msg)
+	} else if m.filterInputFocus == 2 {
+		m.filterValue, cmd = m.filterValue.Update(msg)
+	}
+	return m, cmd
 }
 
 func (m *TableBrowserModel) extractColumns() {
@@ -876,11 +1315,17 @@ func (m TableBrowserModel) View() string {
 		modeStr = "DESCRIBE"
 	case modeScan:
 		modeStr = "SCAN"
+		if m.hasActiveFilter() {
+			modeStr += " | " + m.filterField.Value() + " " + filterOperators[m.filterOpIdx].symbol + " " + m.filterValue.Value()
+		}
 	case modeQuery, modeQueryInput:
 		if m.selectedIndex != "" {
 			modeStr = "QUERY:" + m.selectedIndex
 		} else {
 			modeStr = "QUERY"
+		}
+		if m.hasActiveFilter() {
+			modeStr += " | " + m.filterField.Value() + " " + filterOperators[m.filterOpIdx].symbol + " " + m.filterValue.Value()
 		}
 	}
 	title := fmt.Sprintf("%s [%s]", m.tableName, modeStr)
@@ -969,6 +1414,9 @@ func (m TableBrowserModel) View() string {
 		}
 		s.WriteString(skLabel + m.skInput.View() + "\n")
 
+		// Filter row
+		s.WriteString(m.renderFilterRow(m.inputFocused == 3))
+
 		s.WriteString("\n")
 		s.WriteString(components.MutedStyle.Render("↑/↓/tab: switch fields | enter: select index / query | esc: cancel"))
 		return components.Container.Render(s.String())
@@ -1005,11 +1453,21 @@ func (m TableBrowserModel) View() string {
 	}
 	s.WriteString(components.MutedStyle.Render(info) + "\n\n")
 
+	// Show filter row if active in scan mode
+	if m.mode == modeScan && m.showFilter {
+		s.WriteString(m.renderFilterRow(true))
+	}
+
 	// Table
 	s.WriteString(m.table.View() + "\n")
 
 	// Help
-	help := "↑/↓: rows | ←/→: columns | enter: view | d: describe | f: query | s: scan | r: refresh | esc: back"
+	var help string
+	if m.mode == modeScan && m.showFilter {
+		help = "tab/←/→: switch fields | enter: apply filter | ctrl+d: clear | esc: close filter"
+	} else {
+		help = "↑/↓: rows | ←/→: columns | /: filter | enter: view | d: describe | f: query | s: scan | r: refresh | esc: back"
+	}
 	s.WriteString("\n" + components.MutedStyle.Render(help))
 
 	return components.Container.Render(s.String())
@@ -1099,4 +1557,68 @@ func (m TableBrowserModel) getSelectedIndexOption() indexOption {
 		return m.indexOptions[0]
 	}
 	return indexOption{label: "Table"}
+}
+
+// updateFilterSuggestions extracts field names from loaded items for autocomplete
+func (m *TableBrowserModel) updateFilterSuggestions() {
+	seen := make(map[string]bool)
+	var fields []string
+
+	for _, item := range m.items {
+		for k := range item {
+			if !seen[k] {
+				fields = append(fields, k)
+				seen[k] = true
+			}
+		}
+	}
+
+	m.filterField.SetSuggestions(fields)
+}
+
+// buildFilterExpression creates an expression.ConditionBuilder from filter inputs
+func (m TableBrowserModel) buildFilterExpression() expression.ConditionBuilder {
+	field := m.filterField.Value()
+	value := m.filterValue.Value()
+
+	if field == "" || value == "" {
+		return expression.ConditionBuilder{}
+	}
+
+	op := filterOperators[m.filterOpIdx].symbol
+	name := expression.Name(field)
+
+	switch op {
+	case "=":
+		return name.Equal(expression.Value(value))
+	case "<>":
+		return name.NotEqual(expression.Value(value))
+	case "<":
+		return name.LessThan(expression.Value(value))
+	case ">":
+		return name.GreaterThan(expression.Value(value))
+	case "<=":
+		return name.LessThanEqual(expression.Value(value))
+	case ">=":
+		return name.GreaterThanEqual(expression.Value(value))
+	case "begins_with":
+		return name.BeginsWith(value)
+	case "contains":
+		return name.Contains(value)
+	default:
+		return expression.ConditionBuilder{}
+	}
+}
+
+// hasActiveFilter returns true if a valid filter is configured
+func (m TableBrowserModel) hasActiveFilter() bool {
+	return m.filterField.Value() != "" && m.filterValue.Value() != ""
+}
+
+// clearFilter resets filter inputs
+func (m *TableBrowserModel) clearFilter() {
+	m.filterField.SetValue("")
+	m.filterValue.SetValue("")
+	m.filterOpIdx = 0
+	m.showFilter = false
 }
