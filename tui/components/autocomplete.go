@@ -246,3 +246,8 @@ func (a Autocomplete) renderDropdown() string {
 func (a Autocomplete) DropdownVisible() bool {
 	return a.showDropdown
 }
+
+// Position returns cursor position in the text input
+func (a Autocomplete) Position() int {
+	return a.textInput.Position()
+}

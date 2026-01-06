@@ -12,6 +12,7 @@ import (
 
 	"github.com/orhayat/dynamodb-go/tui/app"
 	"github.com/orhayat/dynamodb-go/tui/dynamo"
+	"github.com/orhayat/dynamodb-go/tui/storage"
 )
 
 var (
@@ -80,8 +81,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create filter storage
+	filterStorage := storage.NewMemoryFilterStorage()
+
 	// Create and run app
-	appModel := app.New(client, logger, profile, region)
+	appModel := app.New(client, logger, filterStorage, profile, region)
 	p := tea.NewProgram(appModel, tea.WithAltScreen(), tea.WithoutSignalHandler())
 
 	if _, err := p.Run(); err != nil {

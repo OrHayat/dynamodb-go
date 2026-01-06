@@ -6,6 +6,7 @@ import (
 	"github.com/orhayat/dynamodb-go/tui/components"
 	"github.com/orhayat/dynamodb-go/tui/dynamo"
 	"github.com/orhayat/dynamodb-go/tui/messages"
+	"github.com/orhayat/dynamodb-go/tui/storage"
 	"github.com/orhayat/dynamodb-go/tui/views"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,10 +15,11 @@ import (
 
 // Model is the root application model
 type Model struct {
-	client    *dynamo.Client
-	logger    *slog.Logger
-	ctx       Context
-	statusbar components.StatusBar
+	client        *dynamo.Client
+	logger        *slog.Logger
+	filterStorage storage.FilterStorage
+	ctx           Context
+	statusbar     components.StatusBar
 
 	// Views
 	tablesList   views.TablesListModel
@@ -40,7 +42,7 @@ type Model struct {
 }
 
 // New creates a new app model
-func New(client *dynamo.Client, logger *slog.Logger, profile, region string) Model {
+func New(client *dynamo.Client, logger *slog.Logger, filterStorage storage.FilterStorage, profile, region string) Model {
 	ctx := Context{
 		Profile: profile,
 		Region:  region,
@@ -51,13 +53,14 @@ func New(client *dynamo.Client, logger *slog.Logger, profile, region string) Mod
 	statusbar.SetBindings(components.TablesListBindings())
 
 	return Model{
-		client:      client,
-		logger:      logger,
-		ctx:         ctx,
-		statusbar:   statusbar,
-		currentView: ViewTablesList,
-		tablesList:  views.NewTablesListModel(client),
-		helpOverlay: components.NewHelpOverlay(),
+		client:        client,
+		logger:        logger,
+		filterStorage: filterStorage,
+		ctx:           ctx,
+		statusbar:     statusbar,
+		currentView:   ViewTablesList,
+		tablesList:    views.NewTablesListModel(client),
+		helpOverlay:   components.NewHelpOverlay(),
 	}
 }
 
@@ -125,7 +128,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.NavigateToTableMsg:
 		m.ctx.TableName = msg.TableName
 		m.currentView = ViewTableBrowser
-		m.tableBrowser = views.NewTableBrowserModel(m.client, m.logger, msg.TableName, int(msg.InitialMode))
+		m.tableBrowser = views.NewTableBrowserModel(m.client, m.logger, m.filterStorage, msg.TableName, int(msg.InitialMode))
 		m.tableBrowser.SetSize(m.width, m.height-2)
 		m.statusbar.SetContext(m.ctx.Profile, m.ctx.Region, msg.TableName)
 		m.statusbar.SetBindings(components.BrowserBindings())
@@ -143,6 +146,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.NavigateBackMsg:
 		switch m.currentView {
 		case ViewTableBrowser:
+			// Save filter state before leaving
+			if filterState := m.tableBrowser.GetFilterState(); filterState.Field != "" || filterState.Value != "" {
+				m.filterStorage.Set(m.ctx.TableName, filterState)
+			}
 			m.currentView = ViewTablesList
 			m.ctx.TableName = ""
 			m.ctx.TableSchema = nil
