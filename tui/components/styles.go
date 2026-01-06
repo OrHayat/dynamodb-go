@@ -109,6 +109,27 @@ var (
 			Foreground(lipgloss.Color("#ADB5BD"))
 )
 
+// JSON syntax highlighting styles
+var (
+	JSONKey = lipgloss.NewStyle().
+		Foreground(adaptiveColor("#79C0FF", "#0550AE")) // Blue for keys
+
+	JSONString = lipgloss.NewStyle().
+			Foreground(adaptiveColor("#A5D6FF", "#0A3069")) // Light blue for strings
+
+	JSONNumber = lipgloss.NewStyle().
+			Foreground(adaptiveColor("#FFA657", "#953800")) // Orange for numbers
+
+	JSONBool = lipgloss.NewStyle().
+			Foreground(adaptiveColor("#FF7B72", "#CF222E")) // Red for booleans
+
+	JSONNull = lipgloss.NewStyle().
+			Foreground(Muted) // Gray for null
+
+	JSONBracket = lipgloss.NewStyle().
+			Foreground(adaptiveColor("#8B949E", "#57606A")) // Subtle for brackets
+)
+
 func statusBarFg() lipgloss.Color {
 	if IsDarkBackground {
 		return Light // white text on dark bg

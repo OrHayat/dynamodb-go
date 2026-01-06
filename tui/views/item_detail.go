@@ -47,7 +47,7 @@ func (m *ItemDetailModel) SetSize(width, height int) {
 
 	headerHeight := 4 // Title + key info + spacing
 	m.viewport = viewport.New(width-4, height-headerHeight)
-	m.viewport.SetContent(m.jsonString)
+	m.viewport.SetContent(components.HighlightJSON(m.jsonString))
 }
 
 // Init initializes the view
