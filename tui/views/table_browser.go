@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
@@ -29,6 +31,27 @@ const (
 	modeQuery
 	modeQueryInput
 )
+
+// Cache configuration - adjust these as needed
+const (
+	LogicalPageSize = 50 // items per logical page (display)
+)
+
+// cachedPage represents a fetched DynamoDB page
+type cachedPage struct {
+	items     []map[string]any
+	fetchedAt time.Time
+	nextKey   dbtable.PaginationKey
+	hasMore   bool
+}
+
+// age returns how long ago this page was fetched
+func (p cachedPage) age() time.Duration {
+	return time.Since(p.fetchedAt)
+}
+
+// clearExportMsgMsg is sent to clear export status message
+type clearExportMsgMsg struct{}
 
 // indexOption represents a queryable index (table or GSI/LSI)
 type indexOption struct {
@@ -80,15 +103,22 @@ type TableBrowserModel struct {
 	tableName     string
 	schema        *dbtable.TableDefinition
 
-	items   []map[string]any
+	// Cached data
+	cache          []cachedPage     // physical DynamoDB pages
+	allItems       []map[string]any // flattened items from all cached pages
+	logicalPageIdx int              // current logical page (0-indexed)
+	fetchingMore   bool             // true when fetching next physical page
+
 	columns []string
 	table   table.Model
 
-	mode            browserMode
-	currentStartKey dbtable.PaginationKey
-	nextPageKey     dbtable.PaginationKey
-	hasNextPage     bool
-	pageHistory     []dbtable.PaginationKey
+	mode browserMode
+
+	// Export
+	showExport      bool
+	exportPath      textinput.Model
+	exportMsg       string
+	exportOverwrite bool
 
 	// Query input
 	pkInput      textinput.Model
@@ -139,6 +169,11 @@ func NewTableBrowserModel(client *dynamo.Client, logger *slog.Logger, filterStor
 	filterValue := textinput.New()
 	filterValue.Placeholder = "value"
 
+	// Initialize export input
+	exportPath := textinput.New()
+	exportPath.Placeholder = "filename.jsonl"
+	exportPath.CharLimit = 256
+
 	// Load saved filter state
 	var filterTypeIdx, filterOpIdx int
 	if savedFilter, ok := filterStorage.Get(tableName); ok {
@@ -181,6 +216,7 @@ func NewTableBrowserModel(client *dynamo.Client, logger *slog.Logger, filterStor
 		filterValue:   filterValue,
 		filterTypeIdx: filterTypeIdx,
 		filterOpIdx:   filterOpIdx,
+		exportPath:    exportPath,
 		table:         t,
 		pendingMode:   initialMode,
 	}
@@ -242,22 +278,45 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 		default: // Scan (0 or any other)
 			m.mode = modeScan
 			m.loading.SetMessage("Scanning items...")
-			return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+			return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{})
 		}
 
 	case dynamo.ItemsLoadedMsg:
-		m.items = msg.Items
-		m.nextPageKey = msg.NextPage
-		m.hasNextPage = msg.HasNextPage
+		// Add to cache
+		page := cachedPage{
+			items:     msg.Items,
+			fetchedAt: time.Now(),
+			nextKey:   msg.NextPage,
+			hasMore:   msg.HasNextPage,
+		}
+		m.cache = append(m.cache, page)
+		m.fetchingMore = false // Allow next fetch
+		m.rebuildAllItems()
 		m.extractColumns()
-		m.buildTable()
+		m.buildTableForLogicalPage()
 		m.updateFilterSuggestions()
 		m.err = nil
+		// Log cache state
+		m.logger.Info("Cache updated",
+			"physicalPages", len(m.cache),
+			"totalItems", len(m.allItems),
+			"logicalPages", (len(m.allItems)+LogicalPageSize-1)/LogicalPageSize,
+		)
+
+	case clearExportMsgMsg:
+		m.exportMsg = ""
+		return m, nil
 
 	case dynamo.ErrorMsg:
 		m.err = msg.Err
+		m.fetchingMore = false
 
 	case tea.KeyMsg:
+		// Handle export input mode
+		if m.showExport {
+			return m.handleExportInput(msg)
+		}
+
 		// Handle query input mode
 		if m.mode == modeQueryInput {
 			return m.handleQueryInput(msg)
@@ -275,7 +334,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				// Start scan
 				m.mode = modeScan
 				m.loading.SetMessage("Scanning items...")
-				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{})
 			case "f":
 				// Enter query mode from DESCRIBE
 				m.previousMode = modeDescribe
@@ -301,10 +360,11 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 
 		switch msg.String() {
 		case "enter":
-			if len(m.items) > 0 && m.schema != nil {
+			visibleItems := m.getVisibleItems()
+			if len(visibleItems) > 0 && m.schema != nil {
 				idx := m.table.Cursor()
-				if idx < len(m.items) {
-					item := m.items[idx]
+				if idx < len(visibleItems) {
+					item := visibleItems[idx]
 					key := m.extractKey(item)
 					pkName := m.schema.PrimaryKey.Name
 					skName := m.schema.RangeKey.Name
@@ -315,10 +375,11 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 			}
 		case "ctrl+c":
 			// Copy whole item as JSON to clipboard + store all keys for internal paste
-			if len(m.items) > 0 && m.schema != nil {
+			visibleItems := m.getVisibleItems()
+			if len(visibleItems) > 0 && m.schema != nil {
 				idx := m.table.Cursor()
-				if idx < len(m.items) {
-					item := m.items[idx]
+				if idx < len(visibleItems) {
+					item := visibleItems[idx]
 					// Copy whole item as JSON to clipboard
 					if jsonBytes, err := json.MarshalIndent(item, "", "  "); err == nil {
 						clipboard.WriteAll(string(jsonBytes))
@@ -332,60 +393,41 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				}
 			}
 		case "n":
-			// Next page
-			if m.hasNextPage && m.schema != nil {
-				m.pageHistory = append(m.pageHistory, m.currentStartKey)
-				m.currentStartKey = m.nextPageKey
-				m.loading.SetMessage("Loading next page...")
-				m.items = nil
-				if m.mode == modeQuery {
-					input := dbtable.QueryInput{
-						Key:           dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
-						Index:         m.selectedIndex,
-						PaginationKey: m.currentStartKey,
-						Limit:         50,
-					}
-					if m.hasActiveFilter() {
-						input.FilterExpression = m.buildFilterExpression()
-					}
-					return m, m.client.QueryCmd(m.schema, input)
+			// Next logical page
+			if m.schema != nil && !m.fetchingMore {
+				nextStart := (m.logicalPageIdx + 1) * LogicalPageSize
+				if nextStart < len(m.allItems) {
+					// Have cached data, just move to next logical page
+					m.logicalPageIdx++
+					m.buildTableForLogicalPage()
+					return m, nil
+				} else if m.hasMorePhysicalPages() {
+					// Need to fetch next physical page
+					m.fetchingMore = true
+					m.loading.SetMessage("Loading more items...")
+					return m, m.fetchNextPhysicalPage()
 				}
-				input := dbtable.ScanInput{
-					PaginationKey: m.currentStartKey,
-					Limit:         50,
-				}
-				if m.hasActiveFilter() {
-					input.FilterExpression = m.buildFilterExpression()
-				}
-				return m, m.client.ScanCmd(m.schema, input)
 			}
+			return m, nil
 		case "p":
-			// Previous page
-			if len(m.pageHistory) > 0 && m.schema != nil {
-				m.currentStartKey = m.pageHistory[len(m.pageHistory)-1]
-				m.pageHistory = m.pageHistory[:len(m.pageHistory)-1]
-				m.loading.SetMessage("Loading previous page...")
-				m.items = nil
-				if m.mode == modeQuery {
-					input := dbtable.QueryInput{
-						Key:           dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
-						Index:         m.selectedIndex,
-						PaginationKey: m.currentStartKey,
-						Limit:         50,
-					}
-					if m.hasActiveFilter() {
-						input.FilterExpression = m.buildFilterExpression()
-					}
-					return m, m.client.QueryCmd(m.schema, input)
-				}
-				input := dbtable.ScanInput{
-					PaginationKey: m.currentStartKey,
-					Limit:         50,
-				}
-				if m.hasActiveFilter() {
-					input.FilterExpression = m.buildFilterExpression()
-				}
-				return m, m.client.ScanCmd(m.schema, input)
+			// Previous logical page (instant, from cache)
+			if m.logicalPageIdx > 0 {
+				m.logicalPageIdx--
+				m.buildTableForLogicalPage()
+			}
+			return m, nil
+		case "ctrl+e":
+			// Export items
+			if len(m.allItems) > 0 && m.schema != nil {
+				m.showExport = true
+				m.exportMsg = ""
+				m.exportOverwrite = false
+				timestamp := time.Now().Format("20060102_150405")
+				defaultPath := fmt.Sprintf("%s_%s.jsonl", m.tableName, timestamp)
+				m.exportPath.SetValue(defaultPath)
+				m.exportPath.Focus()
+				m.exportPath.CursorEnd()
+				return m, textinput.Blink
 			}
 		case "/":
 			// Toggle filter in scan mode
@@ -418,7 +460,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 			if m.schema != nil {
 				m.mode = modeScan
 				m.err = nil
-				m.pageHistory = nil
+				m.clearCache()
 				m.columnOffset = 0
 				m.selectedIndex = "" // Reset to table
 				// Keep filter visible if there's an active filter
@@ -427,8 +469,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 				}
 				m.blurAllInputs()
 				m.loading.SetMessage("Scanning items...")
-				m.items = nil
-				input := dbtable.ScanInput{Limit: 50}
+				input := dbtable.ScanInput{} // No limit - fetch full 1MB page
 				if m.hasActiveFilter() {
 					input.FilterExpression = m.buildFilterExpression()
 				}
@@ -457,7 +498,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 			// Scroll columns left
 			if m.columnOffset > 0 {
 				m.columnOffset--
-				m.buildTable()
+				m.buildTableForLogicalPage()
 			}
 			return m, nil
 		case "right", "l":
@@ -468,7 +509,7 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 			}
 			if m.columnOffset < maxOffset {
 				m.columnOffset++
-				m.buildTable()
+				m.buildTableForLogicalPage()
 			}
 			return m, nil
 		case "r":
@@ -476,22 +517,19 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 			if m.schema != nil {
 				m.err = nil
 				m.loading.SetMessage("Refreshing...")
-				m.items = nil
-				m.pageHistory = nil
+				m.clearCache()
 				m.columnOffset = 0
-				m.currentStartKey = dbtable.PaginationKey{}
 				if m.mode == modeQuery {
 					input := dbtable.QueryInput{
 						Key:   dbtable.Key{PK: m.pkInput.Value(), SK: m.skInput.Value()},
 						Index: m.selectedIndex,
-						Limit: 50,
 					}
 					if m.hasActiveFilter() {
 						input.FilterExpression = m.buildFilterExpression()
 					}
 					return m, m.client.QueryCmd(m.schema, input)
 				}
-				input := dbtable.ScanInput{Limit: 50}
+				input := dbtable.ScanInput{}
 				if m.hasActiveFilter() {
 					input.FilterExpression = m.buildFilterExpression()
 				}
@@ -556,12 +594,11 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 			if m.schema != nil {
 				m.mode = modeScan
 				m.err = nil
-				m.pageHistory = nil
+				m.clearCache()
 				m.columnOffset = 0
 				m.selectedIndex = ""
 				m.loading.SetMessage("Scanning items...")
-				m.items = nil
-				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{Limit: 50})
+				return m, m.client.ScanCmd(m.schema, dbtable.ScanInput{})
 			}
 			return m, nil
 		case "d":
@@ -676,15 +713,12 @@ func (m TableBrowserModel) handleQueryInput(msg tea.KeyMsg) (TableBrowserModel, 
 			return m, nil // PK is required
 		}
 		m.mode = modeQuery
-		m.pageHistory = nil
+		m.clearCache()
 		m.columnOffset = 0
-		m.currentStartKey = dbtable.PaginationKey{}
 		m.loading.SetMessage("Querying items...")
-		m.items = nil
 		input := dbtable.QueryInput{
 			Key:   dbtable.Key{PK: m.pkInput.Value()},
 			Index: m.selectedIndex,
-			Limit: 50,
 		}
 		if m.skInput.Value() != "" {
 			input.Key.SK = m.skInput.Value()
@@ -1110,15 +1144,12 @@ func (m TableBrowserModel) handleFilterInput(msg tea.KeyMsg) (TableBrowserModel,
 			return m, nil // PK is required
 		}
 		m.mode = modeQuery
-		m.pageHistory = nil
+		m.clearCache()
 		m.columnOffset = 0
-		m.currentStartKey = dbtable.PaginationKey{}
 		m.loading.SetMessage("Querying items...")
-		m.items = nil
 		input := dbtable.QueryInput{
 			Key:   dbtable.Key{PK: m.pkInput.Value()},
 			Index: m.selectedIndex,
-			Limit: 50,
 		}
 		if m.skInput.Value() != "" {
 			input.Key.SK = m.skInput.Value()
@@ -1305,12 +1336,10 @@ func (m TableBrowserModel) handleScanFilterInput(msg tea.KeyMsg) (TableBrowserMo
 		m.filterField.Blur()
 		m.filterValue.Blur()
 		m.showFilter = false
-		m.pageHistory = nil
+		m.clearCache()
 		m.columnOffset = 0
-		m.currentStartKey = dbtable.PaginationKey{}
 		m.loading.SetMessage("Scanning with filter...")
-		m.items = nil
-		input := dbtable.ScanInput{Limit: 50}
+		input := dbtable.ScanInput{}
 		if m.hasActiveFilter() {
 			input.FilterExpression = m.buildFilterExpression()
 		}
@@ -1352,7 +1381,7 @@ func (m *TableBrowserModel) extractColumns() {
 	}
 
 	// Add other columns from items
-	for _, item := range m.items {
+	for _, item := range m.allItems {
 		for k := range item {
 			if !seen[k] {
 				cols = append(cols, k)
@@ -1361,112 +1390,6 @@ func (m *TableBrowserModel) extractColumns() {
 		}
 	}
 	m.columns = cols
-}
-
-func (m *TableBrowserModel) buildTable() {
-	if len(m.columns) == 0 {
-		return
-	}
-
-	// Ensure columnOffset is valid
-	if m.columnOffset >= len(m.columns) {
-		m.columnOffset = len(m.columns) - 1
-	}
-	if m.columnOffset < 0 {
-		m.columnOffset = 0
-	}
-
-	// Calculate column widths based on content
-	colWidths := make(map[string]int)
-	for _, col := range m.columns {
-		colWidths[col] = len(col) // Start with header width
-	}
-
-	// Check content widths
-	for _, item := range m.items {
-		for _, col := range m.columns {
-			val := m.formatValue(item[col])
-			if len(val) > colWidths[col] {
-				colWidths[col] = len(val)
-			}
-		}
-	}
-
-	// Cap widths
-	maxWidth := 30
-	minWidth := 10
-	totalWidth := m.width - 4 // padding
-	if totalWidth < 40 {
-		totalWidth = 80
-	}
-
-	// Determine which columns fit starting from columnOffset
-	visibleCols := []string{}
-	usedWidth := 0
-	for i := m.columnOffset; i < len(m.columns); i++ {
-		col := m.columns[i]
-		width := colWidths[col]
-		if width < minWidth {
-			width = minWidth
-		}
-		if width > maxWidth {
-			width = maxWidth
-		}
-		// Check if this column fits
-		if usedWidth+width+3 > totalWidth && len(visibleCols) > 0 {
-			break // No more room
-		}
-		visibleCols = append(visibleCols, col)
-		usedWidth += width + 3 // +3 for separator
-	}
-
-	// Safety: ensure at least one column
-	if len(visibleCols) == 0 && len(m.columns) > 0 {
-		idx := m.columnOffset
-		if idx >= len(m.columns) {
-			idx = len(m.columns) - 1
-		}
-		visibleCols = []string{m.columns[idx]}
-	}
-
-	// Build columns for visible ones only
-	columns := make([]table.Column, len(visibleCols))
-	for i, col := range visibleCols {
-		width := colWidths[col]
-		if width < minWidth {
-			width = minWidth
-		}
-		if width > maxWidth {
-			width = maxWidth
-		}
-		columns[i] = table.Column{Title: col, Width: width}
-	}
-
-	// Build rows with only visible columns
-	rows := make([]table.Row, len(m.items))
-	for i, item := range m.items {
-		row := make(table.Row, len(visibleCols))
-		for j, col := range visibleCols {
-			val := m.formatValue(item[col])
-			// Truncate if needed
-			maxLen := columns[j].Width
-			if len(val) > maxLen {
-				val = val[:maxLen-1] + "…"
-			}
-			row[j] = val
-		}
-		rows[i] = row
-	}
-
-	cursor := m.table.Cursor()
-	// Clear rows first to avoid panic when column count changes
-	m.table.SetRows([]table.Row{})
-	m.table.SetColumns(columns)
-	m.table.SetRows(rows)
-	if cursor >= len(rows) {
-		cursor = 0
-	}
-	m.table.SetCursor(cursor)
 }
 
 func (m TableBrowserModel) extractKey(item map[string]any) dbtable.Key {
@@ -1650,23 +1573,36 @@ func (m TableBrowserModel) View() string {
 		return components.Container.Render(s.String())
 	}
 
-	if m.items == nil {
+	if len(m.cache) == 0 {
 		s.WriteString("\n" + m.loading.View() + "\n")
 		return components.Container.Render(s.String())
 	}
 
-	if len(m.items) == 0 {
+	if len(m.allItems) == 0 {
 		s.WriteString("\n" + components.MutedStyle.Render("No items found") + "\n")
 		return components.Container.Render(s.String())
 	}
 
 	// Info line
-	pageNum := len(m.pageHistory) + 1
-	info := fmt.Sprintf("%d items | Page %d", len(m.items), pageNum)
-	if m.hasNextPage {
+	visibleItems := m.getVisibleItems()
+	totalLogicalPages := (len(m.allItems) + LogicalPageSize - 1) / LogicalPageSize
+	info := fmt.Sprintf("%d items | Page %d/%d", len(visibleItems), m.logicalPageIdx+1, totalLogicalPages)
+	// Show cache age (oldest page)
+	if len(m.cache) > 0 {
+		oldestAge := m.cache[0].age()
+		for _, p := range m.cache[1:] {
+			if p.age() > oldestAge {
+				oldestAge = p.age()
+			}
+		}
+		info += fmt.Sprintf(" | Cache: %s", formatDuration(oldestAge))
+	}
+	// Can go to next logical page if there are more items or more physical pages
+	hasNextLogical := (m.logicalPageIdx+1)*LogicalPageSize < len(m.allItems) || m.hasMorePhysicalPages()
+	if hasNextLogical {
 		info += " | n: next"
 	}
-	if len(m.pageHistory) > 0 {
+	if m.logicalPageIdx > 0 {
 		info += " | p: prev"
 	}
 	// Column scroll indicator
@@ -1683,16 +1619,46 @@ func (m TableBrowserModel) View() string {
 	// Table
 	s.WriteString(m.table.View() + "\n")
 
+	// Export prompt or message
+	if m.showExport {
+		s.WriteString("\n")
+		if m.exportOverwrite {
+			s.WriteString(components.WarningStyle.Render("File exists! Overwrite? (enter: yes, n: no)") + "\n")
+		} else {
+			s.WriteString(components.HelpKey.Render("Export to: ") + m.exportPath.View() + "\n")
+		}
+	} else if m.exportMsg != "" {
+		s.WriteString("\n" + components.MutedStyle.Render(m.exportMsg) + "\n")
+	}
+
 	// Help
 	var help string
-	if m.mode == modeScan && m.showFilter {
+	if m.showExport {
+		help = "enter: export | esc: cancel"
+	} else if m.mode == modeScan && m.showFilter {
 		help = "tab/←/→: switch fields | enter: apply filter | ctrl+d: clear | esc: close filter"
 	} else {
-		help = "↑/↓: rows | ←/→: columns | /: filter | enter: view | d: describe | f: query | s: scan | r: refresh | esc: back"
+		help = "↑/↓: rows | ←/→: columns | /: filter | enter: view | d: describe | f: query | s: scan | r: refresh | ctrl+e: export | esc: back"
 	}
 	s.WriteString("\n" + components.MutedStyle.Render(help))
 
 	return components.Container.Render(s.String())
+}
+
+// formatDuration formats a duration for display (e.g., "2m", "1h5m")
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, mins)
 }
 
 func (m TableBrowserModel) formatValue(v any) string {
@@ -1786,7 +1752,7 @@ func (m *TableBrowserModel) updateFilterSuggestions() {
 	seen := make(map[string]bool)
 	var fields []string
 
-	for _, item := range m.items {
+	for _, item := range m.allItems {
 		for k := range item {
 			if !seen[k] {
 				fields = append(fields, k)
@@ -1868,4 +1834,262 @@ func (m *TableBrowserModel) clearFilter() {
 	m.filterValue.SetValue("")
 	m.filterOpIdx = 0
 	m.showFilter = false
+}
+
+// Cache and pagination helpers
+
+// rebuildAllItems flattens all cached pages into allItems
+func (m *TableBrowserModel) rebuildAllItems() {
+	m.allItems = nil
+	for _, page := range m.cache {
+		m.allItems = append(m.allItems, page.items...)
+	}
+}
+
+// getVisibleItems returns items for the current logical page
+func (m TableBrowserModel) getVisibleItems() []map[string]any {
+	start := m.logicalPageIdx * LogicalPageSize
+	if start >= len(m.allItems) {
+		return nil
+	}
+	end := start + LogicalPageSize
+	if end > len(m.allItems) {
+		end = len(m.allItems)
+	}
+	return m.allItems[start:end]
+}
+
+// hasMorePhysicalPages returns true if there are more pages to fetch from DynamoDB
+func (m TableBrowserModel) hasMorePhysicalPages() bool {
+	if len(m.cache) == 0 {
+		return false
+	}
+	return m.cache[len(m.cache)-1].hasMore
+}
+
+// fetchNextPhysicalPage returns a command to fetch the next physical page
+func (m TableBrowserModel) fetchNextPhysicalPage() tea.Cmd {
+	if len(m.cache) == 0 || !m.hasMorePhysicalPages() {
+		return nil
+	}
+	lastPage := m.cache[len(m.cache)-1]
+
+	if m.mode == modeQuery {
+		input := dbtable.QueryInput{
+			Key:           dbtable.Key{PK: m.pkInput.Value()},
+			Index:         m.selectedIndex,
+			PaginationKey: lastPage.nextKey,
+			// No Limit - fetch full 1MB page
+		}
+		if m.skInput.Value() != "" {
+			input.Key.SK = m.skInput.Value()
+		}
+		if m.hasActiveFilter() {
+			input.FilterExpression = m.buildFilterExpression()
+		}
+		return m.client.QueryCmd(m.schema, input)
+	}
+
+	input := dbtable.ScanInput{
+		PaginationKey: lastPage.nextKey,
+		// No Limit - fetch full 1MB page
+	}
+	if m.hasActiveFilter() {
+		input.FilterExpression = m.buildFilterExpression()
+	}
+	return m.client.ScanCmd(m.schema, input)
+}
+
+
+// buildTableForLogicalPage builds the table view for the current logical page
+func (m *TableBrowserModel) buildTableForLogicalPage() {
+	visibleItems := m.getVisibleItems()
+	if len(m.columns) == 0 || len(visibleItems) == 0 {
+		m.table.SetRows([]table.Row{})
+		return
+	}
+
+	// Ensure columnOffset is valid
+	if m.columnOffset >= len(m.columns) {
+		m.columnOffset = len(m.columns) - 1
+	}
+	if m.columnOffset < 0 {
+		m.columnOffset = 0
+	}
+
+	// Calculate column widths
+	colWidths := make(map[string]int)
+	for _, col := range m.columns {
+		colWidths[col] = len(col)
+	}
+	for _, item := range visibleItems {
+		for _, col := range m.columns {
+			val := m.formatValue(item[col])
+			if len(val) > colWidths[col] {
+				colWidths[col] = len(val)
+			}
+		}
+	}
+
+	// Cap widths
+	maxWidth := 30
+	minWidth := 10
+	totalWidth := m.width - 4
+	if totalWidth < 40 {
+		totalWidth = 80
+	}
+
+	// Determine visible columns
+	visibleCols := []string{}
+	usedWidth := 0
+	for i := m.columnOffset; i < len(m.columns); i++ {
+		col := m.columns[i]
+		width := colWidths[col]
+		if width < minWidth {
+			width = minWidth
+		}
+		if width > maxWidth {
+			width = maxWidth
+		}
+		if usedWidth+width+3 > totalWidth && len(visibleCols) > 0 {
+			break
+		}
+		visibleCols = append(visibleCols, col)
+		usedWidth += width + 3
+	}
+
+	if len(visibleCols) == 0 && len(m.columns) > 0 {
+		idx := m.columnOffset
+		if idx >= len(m.columns) {
+			idx = len(m.columns) - 1
+		}
+		visibleCols = []string{m.columns[idx]}
+	}
+
+	// Build columns
+	columns := make([]table.Column, len(visibleCols))
+	for i, col := range visibleCols {
+		width := colWidths[col]
+		if width < minWidth {
+			width = minWidth
+		}
+		if width > maxWidth {
+			width = maxWidth
+		}
+		columns[i] = table.Column{Title: col, Width: width}
+	}
+
+	// Build rows
+	rows := make([]table.Row, len(visibleItems))
+	for i, item := range visibleItems {
+		row := make(table.Row, len(visibleCols))
+		for j, col := range visibleCols {
+			val := m.formatValue(item[col])
+			maxLen := columns[j].Width
+			if len(val) > maxLen {
+				val = val[:maxLen-1] + "…"
+			}
+			row[j] = val
+		}
+		rows[i] = row
+	}
+
+	cursor := m.table.Cursor()
+	m.table.SetRows([]table.Row{})
+	m.table.SetColumns(columns)
+	m.table.SetRows(rows)
+	if cursor >= len(rows) {
+		cursor = 0
+	}
+	m.table.SetCursor(cursor)
+}
+
+// clearCache resets the cache (for new scan/query)
+func (m *TableBrowserModel) clearCache() {
+	m.cache = nil
+	m.allItems = nil
+	m.logicalPageIdx = 0
+	m.fetchingMore = false
+}
+
+// Export helpers
+
+// handleExportInput handles keys when export prompt is visible
+func (m TableBrowserModel) handleExportInput(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.showExport = false
+		m.exportOverwrite = false
+		m.exportPath.Blur()
+		return m, nil
+
+	case "enter":
+		path := m.exportPath.Value()
+		if path == "" {
+			m.exportMsg = "Error: filename required"
+			return m, nil
+		}
+
+		// Check if file exists
+		if !m.exportOverwrite {
+			if _, err := os.Stat(path); err == nil {
+				m.exportOverwrite = true
+				m.exportPath.Blur()
+				return m, nil
+			}
+		}
+
+		// Export all cached items
+		count, err := m.exportAllItems(path)
+		m.showExport = false
+		m.exportOverwrite = false
+		m.exportPath.Blur()
+		if err != nil {
+			m.exportMsg = fmt.Sprintf("Error: %v", err)
+		} else {
+			m.exportMsg = fmt.Sprintf("Exported %d items to %s", count, path)
+		}
+		return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+			return clearExportMsgMsg{}
+		})
+
+	case "n", "N":
+		if m.exportOverwrite {
+			m.exportOverwrite = false
+			m.exportPath.Focus()
+			return m, textinput.Blink
+		}
+	}
+
+	if !m.exportOverwrite {
+		var cmd tea.Cmd
+		m.exportPath, cmd = m.exportPath.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+// exportAllItems exports all cached items as-is (snapshot)
+func (m *TableBrowserModel) exportAllItems(path string) (int, error) {
+	file, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	// Write all cached items to file
+	for _, item := range m.allItems {
+		jsonBytes, err := json.Marshal(item)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := file.Write(jsonBytes); err != nil {
+			return 0, err
+		}
+		if _, err := file.WriteString("\n"); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(m.allItems), nil
 }

@@ -47,6 +47,9 @@ var (
 	SuccessStyle = lipgloss.NewStyle().
 			Foreground(Success)
 
+	WarningStyle = lipgloss.NewStyle().
+			Foreground(Warning)
+
 	MutedStyle = lipgloss.NewStyle().
 			Foreground(Muted)
 )

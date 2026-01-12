@@ -107,6 +107,7 @@ func BrowserBindings() []KeyBinding {
 		{Key: "n/p", Desc: "page"},
 		{Key: "f", Desc: "find"},
 		{Key: "ctrl+c", Desc: "copy"},
+		{Key: "ctrl+e", Desc: "export"},
 		{Key: "q", Desc: "back"},
 	}
 }

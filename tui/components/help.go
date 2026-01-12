@@ -129,6 +129,7 @@ func FullBindingsForView(view string) ([]KeyBinding, string) {
 			{Key: "f", Desc: "Find/query mode"},
 			{Key: "s", Desc: "Switch to scan mode"},
 			{Key: "ctrl+c", Desc: "Copy item as JSON to clipboard"},
+			{Key: "ctrl+e", Desc: "Export items to JSONL"},
 			{Key: "enter", Desc: "View item details"},
 			{Key: "q / esc", Desc: "Back to tables list"},
 			{Key: "ctrl+q", Desc: "Quit"},
