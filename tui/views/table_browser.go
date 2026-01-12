@@ -109,8 +109,11 @@ type TableBrowserModel struct {
 	logicalPageIdx int              // current logical page (0-indexed)
 	fetchingMore   bool             // true when fetching next physical page
 
-	columns []string
-	table   table.Model
+	columns          []string
+	hiddenColumns    map[string]bool // columns to hide from view
+	showColumnMgr    bool            // column manager overlay visible
+	columnMgrIdx     int             // selected index in column manager
+	table            table.Model
 
 	mode browserMode
 
@@ -209,6 +212,7 @@ func NewTableBrowserModel(client *dynamo.Client, logger *slog.Logger, filterStor
 		logger:        logger,
 		filterStorage: filterStorage,
 		tableName:     tableName,
+		hiddenColumns: make(map[string]bool),
 		loading:       components.NewLoading("Loading table schema..."),
 		pkInput:       pkInput,
 		skInput:       skInput,
@@ -315,6 +319,11 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 		// Handle export input mode
 		if m.showExport {
 			return m.handleExportInput(msg)
+		}
+
+		// Handle column manager
+		if m.showColumnMgr {
+			return m.handleColumnManager(msg)
 		}
 
 		// Handle query input mode
@@ -510,6 +519,13 @@ func (m TableBrowserModel) Update(msg tea.Msg) (TableBrowserModel, tea.Cmd) {
 			if m.columnOffset < maxOffset {
 				m.columnOffset++
 				m.buildTableForLogicalPage()
+			}
+			return m, nil
+		case "v":
+			// Open column manager
+			if len(m.columns) > 0 {
+				m.showColumnMgr = true
+				m.columnMgrIdx = 0
 			}
 			return m, nil
 		case "r":
@@ -1606,8 +1622,12 @@ func (m TableBrowserModel) View() string {
 		info += " | p: prev"
 	}
 	// Column scroll indicator
+	visibleColCount := len(m.getVisibleColumns())
 	if len(m.columns) > 0 {
-		info += fmt.Sprintf(" | Cols: %d-%d/%d", m.columnOffset+1, min(m.columnOffset+5, len(m.columns)), len(m.columns))
+		info += fmt.Sprintf(" | Cols: %d-%d/%d", m.columnOffset+1, min(m.columnOffset+5, visibleColCount), visibleColCount)
+		if len(m.hiddenColumns) > 0 {
+			info += fmt.Sprintf(" (%d hidden)", len(m.hiddenColumns))
+		}
 	}
 	s.WriteString(components.MutedStyle.Render(info) + "\n\n")
 
@@ -1618,6 +1638,11 @@ func (m TableBrowserModel) View() string {
 
 	// Table
 	s.WriteString(m.table.View() + "\n")
+
+	// Column manager overlay
+	if m.showColumnMgr {
+		s.WriteString("\n" + m.renderColumnManager() + "\n")
+	}
 
 	// Export prompt or message
 	if m.showExport {
@@ -1638,7 +1663,7 @@ func (m TableBrowserModel) View() string {
 	} else if m.mode == modeScan && m.showFilter {
 		help = "tab/←/→: switch fields | enter: apply filter | ctrl+d: clear | esc: close filter"
 	} else {
-		help = "↑/↓: rows | ←/→: columns | /: filter | enter: view | d: describe | f: query | s: scan | r: refresh | ctrl+e: export | esc: back"
+		help = "↑/↓: rows | ←/→: cols | v: columns | /: filter | enter: view | f: query | s: scan | r: refresh | ctrl+e: export | esc: back"
 	}
 	s.WriteString("\n" + components.MutedStyle.Render(help))
 
@@ -1859,6 +1884,17 @@ func (m TableBrowserModel) getVisibleItems() []map[string]any {
 	return m.allItems[start:end]
 }
 
+// getVisibleColumns returns columns that aren't hidden, starting from columnOffset
+func (m TableBrowserModel) getVisibleColumns() []string {
+	var visible []string
+	for _, col := range m.columns {
+		if !m.hiddenColumns[col] {
+			visible = append(visible, col)
+		}
+	}
+	return visible
+}
+
 // hasMorePhysicalPages returns true if there are more pages to fetch from DynamoDB
 func (m TableBrowserModel) hasMorePhysicalPages() bool {
 	if len(m.cache) == 0 {
@@ -1904,14 +1940,16 @@ func (m TableBrowserModel) fetchNextPhysicalPage() tea.Cmd {
 // buildTableForLogicalPage builds the table view for the current logical page
 func (m *TableBrowserModel) buildTableForLogicalPage() {
 	visibleItems := m.getVisibleItems()
-	if len(m.columns) == 0 || len(visibleItems) == 0 {
+	// Get columns excluding hidden ones
+	allVisibleCols := m.getVisibleColumns()
+	if len(allVisibleCols) == 0 || len(visibleItems) == 0 {
 		m.table.SetRows([]table.Row{})
 		return
 	}
 
-	// Ensure columnOffset is valid
-	if m.columnOffset >= len(m.columns) {
-		m.columnOffset = len(m.columns) - 1
+	// Ensure columnOffset is valid for visible columns
+	if m.columnOffset >= len(allVisibleCols) {
+		m.columnOffset = len(allVisibleCols) - 1
 	}
 	if m.columnOffset < 0 {
 		m.columnOffset = 0
@@ -1919,11 +1957,11 @@ func (m *TableBrowserModel) buildTableForLogicalPage() {
 
 	// Calculate column widths
 	colWidths := make(map[string]int)
-	for _, col := range m.columns {
+	for _, col := range allVisibleCols {
 		colWidths[col] = len(col)
 	}
 	for _, item := range visibleItems {
-		for _, col := range m.columns {
+		for _, col := range allVisibleCols {
 			val := m.formatValue(item[col])
 			if len(val) > colWidths[col] {
 				colWidths[col] = len(val)
@@ -1939,11 +1977,11 @@ func (m *TableBrowserModel) buildTableForLogicalPage() {
 		totalWidth = 80
 	}
 
-	// Determine visible columns
+	// Determine which columns fit on screen
 	visibleCols := []string{}
 	usedWidth := 0
-	for i := m.columnOffset; i < len(m.columns); i++ {
-		col := m.columns[i]
+	for i := m.columnOffset; i < len(allVisibleCols); i++ {
+		col := allVisibleCols[i]
 		width := colWidths[col]
 		if width < minWidth {
 			width = minWidth
@@ -1958,12 +1996,12 @@ func (m *TableBrowserModel) buildTableForLogicalPage() {
 		usedWidth += width + 3
 	}
 
-	if len(visibleCols) == 0 && len(m.columns) > 0 {
+	if len(visibleCols) == 0 && len(allVisibleCols) > 0 {
 		idx := m.columnOffset
-		if idx >= len(m.columns) {
-			idx = len(m.columns) - 1
+		if idx >= len(allVisibleCols) {
+			idx = len(allVisibleCols) - 1
 		}
-		visibleCols = []string{m.columns[idx]}
+		visibleCols = []string{allVisibleCols[idx]}
 	}
 
 	// Build columns
@@ -2092,4 +2130,145 @@ func (m *TableBrowserModel) exportAllItems(path string) (int, error) {
 	}
 
 	return len(m.allItems), nil
+}
+
+// Column manager
+
+// handleColumnManager handles keys when column manager is open
+func (m TableBrowserModel) handleColumnManager(msg tea.KeyMsg) (TableBrowserModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "v":
+		m.showColumnMgr = false
+		m.buildTableForLogicalPage()
+		return m, nil
+
+	case "up", "k":
+		if m.columnMgrIdx > 0 {
+			m.columnMgrIdx--
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.columnMgrIdx < len(m.columns)-1 {
+			m.columnMgrIdx++
+		}
+		return m, nil
+
+	case "enter", " ":
+		// Toggle visibility of selected column
+		col := m.columns[m.columnMgrIdx]
+		visibleCount := len(m.columns) - len(m.hiddenColumns)
+		// Don't allow hiding the last visible column
+		if m.hiddenColumns[col] || visibleCount > 1 {
+			if m.hiddenColumns[col] {
+				delete(m.hiddenColumns, col)
+			} else {
+				m.hiddenColumns[col] = true
+			}
+		}
+		return m, nil
+
+	case "a":
+		// Show all columns
+		m.hiddenColumns = make(map[string]bool)
+		m.columnOffset = 0
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// renderColumnManager renders the column visibility manager overlay
+func (m TableBrowserModel) renderColumnManager() string {
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(components.Primary).
+		Padding(0, 1).
+		Width(40)
+
+	var rows []string
+	rows = append(rows, components.HelpKey.Render("─ Columns ─"))
+	rows = append(rows, "")
+
+	visibleCount := len(m.columns) - len(m.hiddenColumns)
+
+	for i, col := range m.columns {
+		isHidden := m.hiddenColumns[col]
+
+		// Build column label with key hints
+		label := col
+		if hint := m.getColumnKeyHint(col); hint != "" {
+			label += " " + components.MutedStyle.Render(hint)
+		}
+
+		var line string
+		if isHidden {
+			line = "  ○ " + label
+			line = components.MutedStyle.Render(line)
+		} else {
+			line = "  ● " + label
+		}
+
+		if i == m.columnMgrIdx {
+			// Highlight selected row
+			prefix := "→ ● "
+			if isHidden {
+				prefix = "→ ○ "
+			}
+			line = components.SelectedItem.Render(prefix + col)
+			if hint := m.getColumnKeyHint(col); hint != "" {
+				line += " " + components.MutedStyle.Render(hint)
+			}
+		}
+		rows = append(rows, line)
+	}
+
+	rows = append(rows, "")
+	hiddenCount := len(m.hiddenColumns)
+	if hiddenCount > 0 {
+		rows = append(rows, components.MutedStyle.Render(fmt.Sprintf("%d hidden", hiddenCount)))
+	}
+	// Show warning if only one column visible
+	if visibleCount == 1 {
+		rows = append(rows, components.WarningStyle.Render("(min 1 column required)"))
+	}
+	rows = append(rows, "")
+	rows = append(rows, components.MutedStyle.Render("↑/↓: nav | space: toggle"))
+	rows = append(rows, components.MutedStyle.Render("a: show all | esc: close"))
+
+	return boxStyle.Render(strings.Join(rows, "\n"))
+}
+
+// getColumnKeyHint returns a hint string for a column if it's a key
+func (m TableBrowserModel) getColumnKeyHint(col string) string {
+	if m.schema == nil {
+		return ""
+	}
+
+	// Check table keys
+	if col == m.schema.PrimaryKey.Name {
+		return "(PK)"
+	}
+	if col == m.schema.RangeKey.Name {
+		return "(SK)"
+	}
+
+	// Check GSI keys
+	for _, gsi := range m.schema.GSI {
+		if col == gsi.PrimaryKey.Name {
+			return fmt.Sprintf("(GSI:%s PK)", gsi.IndexName)
+		}
+		if col == gsi.RangeKey.Name {
+			return fmt.Sprintf("(GSI:%s SK)", gsi.IndexName)
+		}
+	}
+
+	// Check LSI keys
+	for _, lsi := range m.schema.LSI {
+		if col == lsi.RangeKey.Name {
+			return fmt.Sprintf("(LSI:%s SK)", lsi.IndexName)
+		}
+	}
+
+	return ""
 }
